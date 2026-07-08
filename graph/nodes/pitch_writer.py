@@ -5,6 +5,7 @@ import requests
 from langdetect import detect
 from config import Config
 from graph.state import GraphState, Job
+from prompts.template_manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +36,7 @@ def call_llm(prompt: str, json_mode: bool = False) -> str:
 
 def extract_pain_points(job: Job) -> list:
     """LLM Step 1: Extract manual pain points from job description."""
-    prompt = f"""Analysiere die folgende Stellenausschreibung und extrahiere ALLE manuellen,
-repetitiven oder zeitaufwändigen Aufgaben, die explizit oder implizit erwähnt werden.
-
-Gib eine JSON-Liste mit kurzen deutschen Stichpunkten zurück.
-
-Stelle:
-{job["description"]}
-
-Ausgabe (nur JSON):
-{{"pain_points": ["...", "...", "..."]}}"""
+    prompt = manager.render("extract_pain_points.jinja", description=job["description"])
 
     logger.info("Extracting pain points via LLM...")
     try:
@@ -64,55 +56,14 @@ Ausgabe (nur JSON):
 
 def write_pitch_email(job: Job, pain_points: list, user_feedback: str = "") -> str:
     """LLM Step 2: Write pitch email in German using pain points."""
-    feedback_section = ""
-    if user_feedback:
-        feedback_section = f"\n# FEEDBACK VOM NUTZER\n{user_feedback}\nPasse die E-Mail entsprechend an.\n"
-        
-    prompt = f"""# ROLLE
-Du bist Yassir Chakour, Gründer von Shinobi Automation.
-Du schreibst kurze, präzise B2B-Kaltakquise-E-Mails auf Deutsch.
-
-# AUFGABE
-Schreibe eine personalisierte Pitch-E-Mail an das Unternehmen, das die folgende
-Stelle ausgeschrieben hat. Ziel: Automatisierung als Lösung anbieten.
-
-# REGELN
-- Schreibe ALS Yassir Chakour. Du bewirbst dich NICHT auf die Stelle.
-- Keine Platzhalter wie [Name] oder [Unternehmen] oder [Stelle]. Wenn kein Name: "Sehr geehrte Damen und Herren,"
-- Kein Tech-Jargon. Nutze: "Automatisierung", "Prozesse", "Abläufe". Niemals "n8n" oder "API".
-- Maximal 90 Wörter. Kurz und prägnant.
-- Exakt diesen Aufbau — kein anderes Format.
-
-# AUFBAU
-1. Anrede
-2. "Ich habe gesehen, dass Sie Unterstützung für [Stelle] suchen."
-3. Nenne 1-2 manuelle Aufgaben aus der Liste und zeige, dass sie Zeit fressen.
-4. "Genau diese Abläufe automatisieren wir — [konkreter Nutzen]."
-5. "Haben Sie die nächsten 5 Minuten für einen kurzen Austausch?"
-6. "Beste Grüße,\\nYassir Chakour\\nShinobi Automation"
-
-# BEISPIEL
-Sehr geehrte Damen und Herren,
-
-ich habe gesehen, dass Sie Unterstützung für Office Management suchen.
-Kalender koordinieren, Reisen buchen, Belege erfassen — das kostet täglich
-mehrere Stunden manueller Arbeit. Genau diese Abläufe automatisieren wir,
-sodass Ihr Team sich auf das Wesentliche konzentrieren kann.
-
-Haben Sie die nächsten 5 Minuten für einen kurzen Austausch?
-
-Beste Grüße,
-Yassir Chakour
-Shinobi Automation
-
-# EINGABE
-Stelle: {job["title"]}
-Unternehmen: {job["company_name"]}
-Gehaltsrahmen: {job["salary_range"]}
-Manuelle Aufgaben: {', '.join(pain_points)}
-{feedback_section}
-# AUSGABE
-Nur der E-Mail-Text. Kein Betreff. Kein Markdown."""
+    prompt = manager.render(
+        "write_pitch.jinja",
+        job_title=job["title"],
+        company_name=job["company_name"],
+        salary_range=job["salary_range"],
+        pain_points=', '.join(pain_points),
+        user_feedback=user_feedback
+    )
 
     logger.info("Generating pitch email via LLM...")
     return call_llm(prompt)

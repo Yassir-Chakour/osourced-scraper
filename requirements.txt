@@ -6,3 +6,4 @@ python-dotenv>=1.0.0
 langdetect>=1.0.9
 structlog>=24.0.0
 requests
+jinja2

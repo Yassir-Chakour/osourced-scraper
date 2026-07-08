@@ -4,6 +4,7 @@ import requests
 from config import Config
 from graph.state import GraphState, Job
 from graph.nodes.pitch_writer import call_llm
+from prompts.template_manager import manager
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +29,7 @@ def reply_handler_node(state: GraphState) -> GraphState:
     user_feedback = job.get("user_feedback", "").strip()
     logger.info(f"Analyzing user feedback: '{user_feedback}'")
     
-    # LLM classification prompt
-    prompt = f"""Klassifiziere die folgende Antwort des Benutzers auf eine Pitch-E-Mail-Vorschau.
-Mögliche Aktionen sind:
-- "approve": Der Benutzer stimmt zu (z.B. "gut so", "schicken", "ok", "yes", "passt", "senden", "go", "perfekt", "gut", "passt so").
-- "reject": Der Benutzer lehnt ab oder möchte überspringen (z.B. "überspringen", "nein", "skip", "nope", "nächste", "ne", "lassen").
-- "modify": Der Benutzer möchte eine Änderung (z.B. "kürzer machen", "formaler schreiben", "füge hinzu...", "ändern").
-
-Gib das Ergebnis im JSON-Format zurück:
-{{
-  "action": "approve" | "reject" | "modify",
-  "modification_instructions": "Beschreibung der gewünschten Änderung auf Englisch, falls die Aktion 'modify' ist."
-}}
-
-Benutzerantwort:
-"{user_feedback}"
-
-Ausgabe (nur JSON):"""
+    prompt = manager.render("reply_handler.jinja", user_feedback=user_feedback)
 
     action = "modify"
     instructions = user_feedback

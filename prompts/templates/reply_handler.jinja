@@ -1,0 +1,16 @@
+Klassifiziere die folgende Antwort des Benutzers auf eine Pitch-E-Mail-Vorschau.
+Mögliche Aktionen sind:
+- "approve": Der Benutzer stimmt zu.
+- "reject": Der Benutzer lehnt ab oder möchte überspringen.
+- "modify": Der Benutzer möchte eine Änderung.
+
+Gib das Ergebnis im JSON-Format zurück:
+{
+  "action": "approve" | "reject" | "modify",
+  "modification_instructions": "Beschreibung der gewünschten Änderung auf Englisch, falls die Aktion 'modify' ist."
+}
+
+Benutzerantwort:
+"{{ user_feedback }}"
+
+Ausgabe (nur JSON):
