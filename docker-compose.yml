@@ -1,0 +1,9 @@
+services:
+  scraper:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data             # persists applied_jobs.json
+      - ./logs:/app/logs             # persists logs
+      - ./screenshots:/app/screenshots
+    restart: "no"
