@@ -10,7 +10,7 @@ from telegram_bot.bot import send_message_sync, send_photo_sync
 logger = logging.getLogger(__name__)
 
 
-def record_applied_job(job: Job):
+def record_applied_job(job: Job, status: str = "applied"):
     """Record job in the permanent applied_jobs.json file."""
     applied_jobs_path = "data/applied_jobs.json"
     os.makedirs("data", exist_ok=True)
@@ -23,18 +23,21 @@ def record_applied_job(job: Job):
         except Exception as e:
             logger.error(f"Failed to read applied_jobs.json: {e}")
 
-    data["applied"].append({
-        "url": job["link"],
-        "applied_at": datetime.now().isoformat(),
-        "title": job["title"]
-    })
+    # Check for duplicates to avoid writing the same job twice
+    if not any(item.get("url") == job["link"] for item in data.get("applied", [])):
+        data["applied"].append({
+            "url": job["link"],
+            "applied_at": datetime.now().isoformat(),
+            "title": job["title"],
+            "status": status
+        })
 
-    try:
-        with open(applied_jobs_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info(f"Recorded job in applied_jobs.json: {job['title']}")
-    except Exception as e:
-        logger.error(f"Failed to write to applied_jobs.json: {e}")
+        try:
+            with open(applied_jobs_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Recorded job ({status}) in applied_jobs.json: {job['title']}")
+        except Exception as e:
+            logger.error(f"Failed to write to applied_jobs.json: {e}")
 
 
 def _fill_and_submit_application(page: Page, job: Job) -> None:

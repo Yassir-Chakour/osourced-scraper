@@ -19,6 +19,7 @@ class Config:
     MAX_MODIFICATION_ROUNDS = int(os.getenv('MAX_MODIFICATION_ROUNDS', '3'))
     DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
     RATE_LIMIT_DELAY = int(os.getenv('RATE_LIMIT_DELAY', '30'))
+    CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '900'))
 
     @staticmethod
     def validate():

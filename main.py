@@ -44,14 +44,6 @@ if __name__ == "__main__":
         logger.critical(f"Configuration validation failed: {e}")
         sys.exit(1)
         
-    run_state_path = "data/run_state.json"
-    if os.path.exists(run_state_path):
-        try:
-            os.remove(run_state_path)
-            logger.info("Wiped old run_state.json.")
-        except Exception as e:
-            logger.warning(f"Could not remove old run_state.json: {e}")
-            
     logger.info("Starting Telegram Bot...")
     try:
         start_bot()
@@ -59,20 +51,40 @@ if __name__ == "__main__":
         logger.exception(f"Failed to start Telegram Bot: {e}")
         sys.exit(1)
         
-    initial_state: GraphState = {
-        "jobs": [],
-        "current_job_index": 0,
-        "run_id": datetime.now().isoformat(),
-        "errors": [],
-        "telegram_chat_id": Config.TELEGRAM_CHAT_ID
-    }
+    import time
+    logger.info(f"Daemon mode started. Check interval: {Config.CHECK_INTERVAL} seconds.")
     
-    logger.info(f"Invoking StateGraph with run_id: {initial_state['run_id']}")
     try:
-        app.invoke(initial_state)
-        logger.info("StateGraph execution completed.")
-    except Exception as e:
-        logger.exception(f"Unhandled error during LangGraph execution: {e}")
+        while True:
+            # Wipe old run_state.json for a clean new scrape run
+            run_state_path = "data/run_state.json"
+            if os.path.exists(run_state_path):
+                try:
+                    os.remove(run_state_path)
+                    logger.info("Wiped old run_state.json.")
+                except Exception as e:
+                    logger.warning(f"Could not remove old run_state.json: {e}")
+            
+            initial_state: GraphState = {
+                "jobs": [],
+                "current_job_index": 0,
+                "run_id": datetime.now().isoformat(),
+                "errors": [],
+                "telegram_chat_id": Config.TELEGRAM_CHAT_ID
+            }
+            
+            logger.info(f"Invoking StateGraph with run_id: {initial_state['run_id']}")
+            try:
+                app.invoke(initial_state)
+                logger.info("StateGraph execution completed.")
+            except Exception as e:
+                logger.exception(f"Unhandled error during LangGraph execution: {e}")
+                
+            logger.info(f"Sleeping for {Config.CHECK_INTERVAL} seconds before next run...")
+            time.sleep(Config.CHECK_INTERVAL)
+            
+    except KeyboardInterrupt:
+        logger.info("Daemon interrupted by user. Shutting down...")
     finally:
         logger.info("Shutting down Telegram Bot...")
         try:

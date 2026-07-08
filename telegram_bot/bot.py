@@ -103,13 +103,19 @@ def send_photo_sync(photo_path: str, caption: str = None) -> None:
     except Exception as e:
         logger.error(f"Failed to send Telegram photo: {e}")
 
-def wait_for_reply(timeout_seconds: float = 1800.0) -> str:
-    """Block the thread until a message is received from the user, or timeout."""
+def clear_reply() -> None:
+    """Clear any previous reply state."""
     global _latest_reply
     _reply_event.clear()
     _latest_reply = None
+    logger.info("Cleared previous Telegram reply state.")
+
+def wait_for_reply(timeout_seconds: float = None) -> str:
+    """Block the thread until a message is received from the user, or timeout."""
+    global _latest_reply
     
-    logger.info(f"Waiting for Telegram reply (timeout: {timeout_seconds}s)...")
+    timeout_str = f"{timeout_seconds}s" if timeout_seconds is not None else "indefinite"
+    logger.info(f"Waiting for Telegram reply (timeout: {timeout_str})...")
     is_set = _reply_event.wait(timeout=timeout_seconds)
     if is_set:
         return _latest_reply

@@ -6,4 +6,4 @@ services:
       - ./data:/app/data             # persists applied_jobs.json
       - ./logs:/app/logs             # persists logs
       - ./screenshots:/app/screenshots
-    restart: "no"
+    restart: unless-stopped
