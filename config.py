@@ -5,7 +5,7 @@ load_dotenv()
 
 
 class Config:
-    USER_LOGIN = 'yassir@shinobiautomation.com'
+    USER_LOGIN = os.getenv('OSOURCED_EMAIL', 'yassir@shinobiautomation.com')
     USER_PASS = os.getenv('OSOURCED_PASSWORD')
     OPENROUTER_KEY = os.getenv('OPENROUTER_API_KEY')
 
@@ -23,7 +23,7 @@ class Config:
 
     @staticmethod
     def validate():
-        if not Config.USER_PASS or not Config.OPENROUTER_KEY:
-            raise ValueError("Missing OSOURCED_PASSWORD or OPENROUTER_API_KEY environment variables.")
+        if not Config.USER_LOGIN or not Config.USER_PASS or not Config.OPENROUTER_KEY:
+            raise ValueError("Missing OSOURCED_EMAIL, OSOURCED_PASSWORD or OPENROUTER_API_KEY environment variables.")
         if not Config.TELEGRAM_BOT_TOKEN or not Config.TELEGRAM_CHAT_ID:
             raise ValueError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID environment variables.")
