@@ -1,7 +1,8 @@
 import os
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import Page
+from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState
 from telegram_bot.bot import send_photo_sync, send_message_sync
@@ -69,23 +70,16 @@ def login_node(state: GraphState) -> GraphState:
     error_msg = ""
     screenshot_path = None
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-
+    def login_flow(page: Page):
+        nonlocal success, error_msg, screenshot_path
         try:
-            logger.info(f"Navigating to login page: {Config.URL_LOGIN}")
-            page.goto(Config.URL_LOGIN)
-
             logger.info("Looking for Login button...")
             if not _click_first_visible_login_button(page):
                 logger.warning("Could not find or click a visible login button. Trying to proceed anyway...")
 
             _fill_and_submit_credentials(page)
-            context.storage_state(path=auth_state_path)
+            page.context.storage_state(path=auth_state_path)
             logger.info(f"Storage state saved successfully to {auth_state_path}")
-
         except Exception as e:
             success = False
             error_msg = f"Exception during login: {str(e)}"
@@ -93,12 +87,18 @@ def login_node(state: GraphState) -> GraphState:
         if not success:
             screenshot_path = _save_login_failure_screenshot(page)
 
-        browser.close()
+    try:
+        StealthyFetcher.adaptive = True
+        StealthyFetcher.fetch(Config.URL_LOGIN, page_action=login_flow, headless=True)
+    except Exception as e:
+        success = False
+        if not error_msg:
+            error_msg = f"Exception during login fetch: {str(e)}"
 
     if not success:
         logger.error(f"Login failed: {error_msg}")
         alert_text = (
-            f"\u26a0\ufe0f Bot Alert\n\n"
+            f"⚠️ Bot Alert\n\n"
             f"Node: login\n"
             f"Error: {error_msg}\n"
             f"Run ID: {state.get('run_id')}\n\n"

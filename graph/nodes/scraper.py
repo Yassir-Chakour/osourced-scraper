@@ -1,7 +1,8 @@
 import os
+import json
 import logging
 from urllib.parse import urljoin
-from playwright.sync_api import sync_playwright
+from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState, Job
 from telegram_bot.bot import send_message_sync
@@ -24,49 +25,47 @@ def scraper_node(state: GraphState) -> GraphState:
         
     jobs_found = []
     
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        # Load the saved session context
-        context = browser.new_context(storage_state=auth_state_path)
-        page = context.new_page()
+    try:
+        with open(auth_state_path, "r", encoding="utf-8") as f:
+            auth_data = json.load(f)
+        cookies = auth_data.get("cookies", [])
         
-        try:
-            logger.info(f"Navigating to jobs page: {Config.URL_LOGIN}")
-            page.goto(Config.URL_LOGIN)
-            
-            logger.info("Extracting job elements...")
-            elements = page.query_selector_all('h3 a')
-            
-            for job_element in elements:
-                title = job_element.inner_text().strip()
-                link = job_element.get_attribute('href')
-                if link and title:
-                    if not link.startswith("http"):
-                        link = urljoin(Config.URL_LOGIN, link)
-                    
-                    job: Job = {
-                        "title": title,
-                        "link": link,
-                        "salary_range": "null",
-                        "description": "",
-                        "company_name": "",
-                        "pain_points": [],
-                        "pitch": "",
-                        "user_feedback": "",
-                        "modification_rounds": 0,
-                        "status": "pending",
-                        "error_message": None
-                    }
-                    jobs_found.append(job)
-            
-            logger.info(f"Found {len(jobs_found)} job listings.")
-            
-        except Exception as e:
-            err = f"Exception during job scraping: {str(e)}"
-            logger.error(err)
-            state["errors"].append(err)
-            
-        browser.close()
+        logger.info(f"Navigating to jobs page: {Config.URL_LOGIN}")
+        StealthyFetcher.adaptive = True
+        response = StealthyFetcher.fetch(Config.URL_LOGIN, cookies=cookies, headless=True)
+        
+        logger.info("Extracting job elements...")
+        elements = response.css('h3 a', adaptive=True)
+        
+        for job_element in elements:
+            title_text = job_element.css('::text').get()
+            title = title_text.strip() if title_text else ""
+            link = job_element.attrib.get('href')
+            if link and title:
+                if not link.startswith("http"):
+                    link = urljoin(Config.URL_LOGIN, link)
+                
+                job: Job = {
+                    "title": title,
+                    "link": link,
+                    "salary_range": "null",
+                    "description": "",
+                    "company_name": "",
+                    "pain_points": [],
+                    "pitch": "",
+                    "user_feedback": "",
+                    "modification_rounds": 0,
+                    "status": "pending",
+                    "error_message": None
+                }
+                jobs_found.append(job)
+        
+        logger.info(f"Found {len(jobs_found)} job listings.")
+        
+    except Exception as e:
+        err = f"Exception during job scraping: {str(e)}"
+        logger.error(err)
+        state["errors"].append(err)
         
     if not state.get("errors"):
         if not jobs_found:

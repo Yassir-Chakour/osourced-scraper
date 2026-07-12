@@ -1,7 +1,8 @@
 import os
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import Page
+from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState
 from telegram_bot.bot import send_photo_sync, send_message_sync
@@ -109,10 +110,8 @@ def health_check_node(state: GraphState) -> GraphState:
     error_msg = ""
     screenshot_path = None
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_context().new_page()
-
+    def health_check_action(page: Page):
+        nonlocal success, error_msg, screenshot_path
         try:
             _login_and_navigate_to_jobs(page)
             success, error_msg = _verify_job_page_selectors(page)
@@ -123,7 +122,13 @@ def health_check_node(state: GraphState) -> GraphState:
         if not success:
             screenshot_path = _take_failure_screenshot(page)
 
-        browser.close()
+    try:
+        StealthyFetcher.adaptive = True
+        StealthyFetcher.fetch(Config.URL_LOGIN, page_action=health_check_action, headless=True)
+    except Exception as e:
+        success = False
+        if not error_msg:
+            error_msg = f"Exception during health check fetch: {str(e)}"
 
     if not success:
         logger.error(f"Health check failed: {error_msg}")
@@ -133,3 +138,4 @@ def health_check_node(state: GraphState) -> GraphState:
         logger.info("Health check passed successfully.")
 
     return state
+

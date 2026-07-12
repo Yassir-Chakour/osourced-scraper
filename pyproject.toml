@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "osourced-scraper"
+version = "0.1.0"
+description = "A bot that scrapes osourced.is for new jobs and applies on my behalf"
+authors = ["Yassir Chakour <yassir@shinobiautomation.com>"]
+readme = "PLAN.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+langgraph = ">=0.2.0"
+langchain-openai = ">=0.1.0"
+python-telegram-bot = ">=21.0"
+playwright = ">=1.44.0"
+python-dotenv = ">=1.0.0"
+langdetect = ">=1.0.9"
+structlog = ">=24.0.0"
+requests = "*"
+jinja2 = "*"
+scrapling = { version = "*", extras = ["fetchers"] }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

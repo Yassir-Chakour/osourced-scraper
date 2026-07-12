@@ -2,7 +2,8 @@ import os
 import json
 import logging
 from datetime import datetime
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import Page
+from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState, Job
 from telegram_bot.bot import send_message_sync, send_photo_sync
@@ -105,29 +106,35 @@ def apply_node(state: GraphState) -> GraphState:
     error_msg = ""
     screenshot_path = None
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(storage_state=auth_state_path)
-        page = context.new_page()
+    try:
+        with open(auth_state_path, "r", encoding="utf-8") as f:
+            auth_data = json.load(f)
+        cookies = auth_data.get("cookies", [])
 
-        try:
-            page.goto(job["link"])
-            _fill_and_submit_application(page, job)
-        except Exception as e:
-            success = False
-            error_msg = f"Exception during application submission: {str(e)}"
-            logger.error(error_msg)
+        def apply_action(page: Page):
+            nonlocal success, error_msg, screenshot_path
+            try:
+                _fill_and_submit_application(page, job)
+            except Exception as e:
+                success = False
+                error_msg = f"Exception during application submission: {str(e)}"
+                logger.error(error_msg)
+                job["status"] = "error"
+                job["error_message"] = error_msg
+                screenshot_path = _take_apply_failure_screenshot(page)
+
+        StealthyFetcher.adaptive = True
+        StealthyFetcher.fetch(job["link"], cookies=cookies, page_action=apply_action, headless=True)
+    except Exception as e:
+        success = False
+        if not error_msg:
+            error_msg = f"Exception during fetch/apply: {str(e)}"
             job["status"] = "error"
             job["error_message"] = error_msg
 
-        if not success:
-            screenshot_path = _take_apply_failure_screenshot(page)
-
-        browser.close()
-
     if not success:
         alert_text = (
-            f"\u26a0\ufe0f Application Failed\n\n"
+            f"⚠️ Application Failed\n\n"
             f"Job: {job['title']}\n"
             f"Error: {error_msg}\n"
             f"Run ID: {state.get('run_id')}"
