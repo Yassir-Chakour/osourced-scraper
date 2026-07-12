@@ -1,11 +1,9 @@
-import os
 import logging
-from datetime import datetime
 from playwright.sync_api import Page
 from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState
-from telegram_bot.bot import send_photo_sync, send_message_sync
+from telegram_bot.bot import send_message_sync
 
 logger = logging.getLogger(__name__)
 
@@ -73,20 +71,7 @@ def _verify_job_page_selectors(page: Page) -> tuple[bool, str]:
     return True, ""
 
 
-def _take_failure_screenshot(page: Page) -> str | None:
-    """Capture a timestamped screenshot and return the path, or None on failure."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = f"screenshots/health_check_fail_{timestamp}.png"
-    try:
-        page.screenshot(path=path)
-        logger.info(f"Screenshot saved to {path}")
-        return path
-    except Exception as se:
-        logger.error(f"Failed to capture screenshot: {se}")
-        return None
-
-
-def _notify_health_check_failure(error_msg: str, run_id: str, screenshot_path: str | None) -> None:
+def _notify_health_check_failure(error_msg: str, run_id: str) -> None:
     """Send Telegram alert when health-check fails."""
     alert_text = (
         f"⚠️ Bot Alert\n\n"
@@ -95,32 +80,24 @@ def _notify_health_check_failure(error_msg: str, run_id: str, screenshot_path: s
         f"Run ID: {run_id}\n\n"
         f"Bot stopped. Manual check needed."
     )
-    if screenshot_path and os.path.exists(screenshot_path):
-        send_photo_sync(screenshot_path, caption=alert_text)
-    else:
-        send_message_sync(alert_text)
+    send_message_sync(alert_text)
 
 
 def health_check_node(state: GraphState) -> GraphState:
     logger.info("Starting health check...")
     Config.validate()
-    os.makedirs("screenshots", exist_ok=True)
 
     success = True
     error_msg = ""
-    screenshot_path = None
 
     def health_check_action(page: Page):
-        nonlocal success, error_msg, screenshot_path
+        nonlocal success, error_msg
         try:
             _login_and_navigate_to_jobs(page)
             success, error_msg = _verify_job_page_selectors(page)
         except Exception as e:
             success = False
             error_msg = f"Exception during health check: {str(e)}"
-
-        if not success:
-            screenshot_path = _take_failure_screenshot(page)
 
     try:
         StealthyFetcher.adaptive = True
@@ -132,10 +109,11 @@ def health_check_node(state: GraphState) -> GraphState:
 
     if not success:
         logger.error(f"Health check failed: {error_msg}")
-        _notify_health_check_failure(error_msg, state.get('run_id', ''), screenshot_path)
+        _notify_health_check_failure(error_msg, state.get('run_id', ''))
         state["errors"].append(error_msg)
     else:
         logger.info("Health check passed successfully.")
 
     return state
+
 

@@ -6,7 +6,7 @@ from playwright.sync_api import Page
 from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState, Job
-from telegram_bot.bot import send_message_sync, send_photo_sync
+from telegram_bot.bot import send_message_sync
 
 logger = logging.getLogger(__name__)
 
@@ -71,19 +71,6 @@ def _fill_and_submit_application(page: Page, job: Job) -> None:
     record_applied_job(job)
 
 
-def _take_apply_failure_screenshot(page: Page) -> str | None:
-    """Capture a timestamped screenshot on apply failure and return its path."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("screenshots", exist_ok=True)
-    path = f"screenshots/apply_fail_{timestamp}.png"
-    try:
-        page.screenshot(path=path)
-        return path
-    except Exception as se:
-        logger.error(f"Failed to capture screenshot: {se}")
-        return None
-
-
 def apply_node(state: GraphState) -> GraphState:
     if state.get("errors"):
         logger.warning("Skipping apply node due to existing errors.")
@@ -104,7 +91,6 @@ def apply_node(state: GraphState) -> GraphState:
     auth_state_path = "data/auth.json"
     success = True
     error_msg = ""
-    screenshot_path = None
 
     try:
         with open(auth_state_path, "r", encoding="utf-8") as f:
@@ -112,7 +98,7 @@ def apply_node(state: GraphState) -> GraphState:
         cookies = auth_data.get("cookies", [])
 
         def apply_action(page: Page):
-            nonlocal success, error_msg, screenshot_path
+            nonlocal success, error_msg
             try:
                 _fill_and_submit_application(page, job)
             except Exception as e:
@@ -121,7 +107,6 @@ def apply_node(state: GraphState) -> GraphState:
                 logger.error(error_msg)
                 job["status"] = "error"
                 job["error_message"] = error_msg
-                screenshot_path = _take_apply_failure_screenshot(page)
 
         StealthyFetcher.adaptive = True
         StealthyFetcher.fetch(job["link"], cookies=cookies, page_action=apply_action, headless=True)
@@ -139,9 +124,7 @@ def apply_node(state: GraphState) -> GraphState:
             f"Error: {error_msg}\n"
             f"Run ID: {state.get('run_id')}"
         )
-        if screenshot_path and os.path.exists(screenshot_path):
-            send_photo_sync(screenshot_path, caption=alert_text)
-        else:
-            send_message_sync(alert_text)
+        send_message_sync(alert_text)
 
     return state
+

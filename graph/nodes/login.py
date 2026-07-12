@@ -1,11 +1,10 @@
 import os
 import logging
-from datetime import datetime
 from playwright.sync_api import Page
 from scrapling.fetchers import StealthyFetcher
 from config import Config
 from graph.state import GraphState
-from telegram_bot.bot import send_photo_sync, send_message_sync
+from telegram_bot.bot import send_message_sync
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +41,6 @@ def _fill_and_submit_credentials(page: Page) -> None:
     page.wait_for_timeout(5000)
 
 
-def _save_login_failure_screenshot(page: Page) -> str | None:
-    """Capture a timestamped screenshot on login failure and return its path."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = f"screenshots/login_fail_{timestamp}.png"
-    try:
-        page.screenshot(path=path)
-        logger.info(f"Screenshot saved to {path}")
-        return path
-    except Exception as se:
-        logger.error(f"Failed to capture screenshot: {se}")
-        return None
-
-
 def login_node(state: GraphState) -> GraphState:
     if state.get("errors"):
         logger.warning("Skipping login node due to existing errors.")
@@ -63,15 +49,13 @@ def login_node(state: GraphState) -> GraphState:
     logger.info("Starting login node...")
     Config.validate()
     os.makedirs("data", exist_ok=True)
-    os.makedirs("screenshots", exist_ok=True)
     auth_state_path = "data/auth.json"
 
     success = True
     error_msg = ""
-    screenshot_path = None
 
     def login_flow(page: Page):
-        nonlocal success, error_msg, screenshot_path
+        nonlocal success, error_msg
         try:
             logger.info("Looking for Login button...")
             if not _click_first_visible_login_button(page):
@@ -83,9 +67,6 @@ def login_node(state: GraphState) -> GraphState:
         except Exception as e:
             success = False
             error_msg = f"Exception during login: {str(e)}"
-
-        if not success:
-            screenshot_path = _save_login_failure_screenshot(page)
 
     try:
         StealthyFetcher.adaptive = True
@@ -104,11 +85,9 @@ def login_node(state: GraphState) -> GraphState:
             f"Run ID: {state.get('run_id')}\n\n"
             f"Bot stopped. Manual check needed."
         )
-        if screenshot_path and os.path.exists(screenshot_path):
-            send_photo_sync(screenshot_path, caption=alert_text)
-        else:
-            send_message_sync(alert_text)
+        send_message_sync(alert_text)
 
         state["errors"].append(error_msg)
 
     return state
+
