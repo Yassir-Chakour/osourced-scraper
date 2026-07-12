@@ -1,10 +1,12 @@
 FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
-# Set environment variables for Poetry
+# Set environment variables for Poetry and Python
 ENV POETRY_VERSION=1.8.2 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_CREATE=false \
-    PATH="/opt/poetry/bin:$PATH"
+    PATH="/opt/poetry/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
 
 # Install Poetry
 RUN curl -sSL https://install.python-poetry.org | python3 -

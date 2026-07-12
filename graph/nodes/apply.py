@@ -36,22 +36,8 @@ def _fill_and_submit_application(page: Page, job: Job) -> None:
         send_message_sync(f"\U0001f680 Application Sent for: {job['title']}")
 
 
-def apply_node(state: GraphState) -> GraphState:
-    if state.get("errors"):
-        logger.warning("Skipping apply node due to existing errors.")
-        return state
-
-    idx = state.get("current_job_index", 0)
-    jobs = state.get("jobs", [])
-    if idx >= len(jobs):
-        logger.warning("No job to apply to.")
-        return state
-
-    job = jobs[idx]
-    if job.get("status") != "approved":
-        logger.warning(f"Job status is {job.get('status')}, not approved. Skipping application.")
-        return state
-
+def apply_job(job: Job) -> bool:
+    """Synchronously apply to a single job using Playwright cookies. Returns True if successful."""
     logger.info(f"Applying to job: {job['title']} (DRY_RUN={Config.DRY_RUN})")
     auth_state_path = "data/auth.json"
     success = True
@@ -77,19 +63,38 @@ def apply_node(state: GraphState) -> GraphState:
         StealthyFetcher.fetch(job["link"], cookies=cookies, page_action=apply_action, headless=True)
     except Exception as e:
         success = False
-        if not error_msg:
-            error_msg = f"Exception during fetch/apply: {str(e)}"
-            job["status"] = "error"
-            job["error_message"] = error_msg
+        error_msg = f"Exception during fetch/apply: {str(e)}"
+        job["status"] = "error"
+        job["error_message"] = error_msg
 
     if not success:
         alert_text = (
             f"⚠️ Application Failed\n\n"
             f"Job: {job['title']}\n"
-            f"Error: {error_msg}\n"
-            f"Run ID: {state.get('run_id')}"
+            f"Error: {error_msg}"
         )
         send_message_sync(alert_text)
 
+    return success
+
+
+def apply_node(state: GraphState) -> GraphState:
+    if state.get("errors"):
+        logger.warning("Skipping apply node due to existing errors.")
+        return state
+
+    idx = state.get("current_job_index", 0)
+    jobs = state.get("jobs", [])
+    if idx >= len(jobs):
+        logger.warning("No job to apply to.")
+        return state
+
+    job = jobs[idx]
+    if job.get("status") != "approved":
+        logger.warning(f"Job status is {job.get('status')}, not approved. Skipping application.")
+        return state
+
+    apply_job(job)
     return state
+
 

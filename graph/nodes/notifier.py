@@ -1,6 +1,8 @@
 import logging
 from graph.state import GraphState
-from telegram_bot.bot import send_message_sync, wait_for_reply, clear_reply
+from telegram_bot.bot import send_message_sync
+from data.jobs_db import add_or_update_job
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +50,13 @@ def notifier_node(state: GraphState) -> GraphState:
     if rounds >= 3:
         msg_text += "\n\n⚠️ 3 Runden erreicht. Soll ich trotzdem abschicken oder überspringen?"
         
-    # Clear any old/stale replies before sending the new card
-    clear_reply()
-    logger.info("Sending job card to Telegram...")
-    send_message_sync(msg_text)
-    
-    # Wait for response indefinitely (timeout_seconds=None)
-    logger.info("Waiting for Telegram reply indefinitely...")
-    reply = wait_for_reply(timeout_seconds=None)
-    
-    if reply == "timeout":
-        logger.warning("User response timed out. Skipping job.")
-        job["user_feedback"] = "skip"
-    else:
-        job["user_feedback"] = reply
-        
+    job["status"] = "pending"
+    job["telegram_message_id"] = None
+
+    # Persist in the database
+    add_or_update_job(job)
+    logger.info(f"Saved job '{job['title']}' to database with status 'pending' (unsent).")
+
     return state
+
+

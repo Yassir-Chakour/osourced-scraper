@@ -118,7 +118,8 @@ workflow.add_conditional_edges(
 
 # Linear flow for pitch writing and feedback
 workflow.add_edge("pitch_writer", "notifier")
-workflow.add_edge("notifier", "reply_handler")
+workflow.add_edge("notifier", "next_job")
+
 
 # Define conditional edges from reply_handler
 def route_after_reply_handler(state: GraphState):
