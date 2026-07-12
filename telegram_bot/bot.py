@@ -41,7 +41,7 @@ def start_bot():
         asyncio.set_event_loop(_loop)
         # Initialize and start application
         _loop.run_until_complete(_application.initialize())
-        _loop.run_until_complete(_application.updater.start_polling())
+        _loop.run_until_complete(_application.updater.start_polling(drop_pending_updates=True))
         _loop.run_until_complete(_application.start())
         logger.info("Telegram Bot started polling.")
         _loop.run_forever()

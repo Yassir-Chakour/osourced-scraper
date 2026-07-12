@@ -29,33 +29,56 @@ def reply_handler_node(state: GraphState) -> GraphState:
     user_feedback = job.get("user_feedback", "").strip()
     logger.info(f"Analyzing user feedback: '{user_feedback}'")
     
-    prompt = manager.render("reply_handler.jinja", user_feedback=user_feedback)
+    fb = user_feedback.lower().strip().strip("!.,?-")
+    action = None
+    instructions = ""
+    
+    # Exact keywords list for direct approval/rejection
+    approve_keywords = {"send", "senden", "go", "yes", "ja", "ok", "okay", "gut", "schicken", "passt", "yep", "perfekt"}
+    reject_keywords = {"skip", "nein", "no", "nope", "lassen", "überspringen", "nächste", "next", "ne"}
+    
+    if fb in approve_keywords:
+        action = "approve"
+    elif fb in reject_keywords:
+        action = "reject"
+                
+    if action:
+        logger.info(f"Direct match found: action classified as '{action}' without calling LLM.")
+    else:
+        logger.info("Feedback is not a simple command, passing to LLM for analysis...")
+        prompt = manager.render("reply_handler.jinja", user_feedback=user_feedback)
+        action = "modify"
+        instructions = user_feedback
 
-    action = "modify"
-    instructions = user_feedback
-
-    try:
-        response_text = call_llm(prompt, json_mode=True)
-        if response_text:
-            data = json.loads(response_text)
-            action = data.get("action", "modify").lower()
-            instructions = data.get("modification_instructions", user_feedback)
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        logger.error(f"Failed to classify reply via LLM: {e}")
-        fb = user_feedback.lower()
-        if any(w in fb for w in ("gut", "schicken", "ok", "yes", "passt", "senden", "go", "perfekt", "ja", "yep")):
-            action = "approve"
-        elif any(w in fb for w in ("\u00fcberspringen", "nein", "skip", "nope", "n\u00e4chste", "ne", "lassen")):
-            action = "reject"
-        else:
-            action = "modify"
+        try:
+            response_text = call_llm(prompt, json_mode=True)
+            if response_text:
+                data = json.loads(response_text)
+                raw_action = data.get("action", "modify").lower().strip()
+                # Normalize action output from LLM
+                if raw_action in ("send", "apply", "approve", "yes", "go"):
+                    action = "approve"
+                elif raw_action in ("reject", "skip", "no"):
+                    action = "reject"
+                else:
+                    action = "modify"
+                instructions = data.get("modification_instructions", user_feedback)
+        except (requests.RequestException, json.JSONDecodeError) as e:
+            logger.error(f"Failed to classify reply via LLM: {e}")
+            # Fallback simple keyword search in case LLM is completely down
+            if any(w in fb for w in approve_keywords):
+                action = "approve"
+            elif any(w in fb for w in reject_keywords):
+                action = "reject"
+            else:
+                action = "modify"
 
     # Check max modification rounds constraint
     rounds = job.get("modification_rounds", 0)
     if action == "modify":
         if rounds >= Config.MAX_MODIFICATION_ROUNDS:
-            logger.warning(f"Max modification rounds ({Config.MAX_MODIFICATION_ROUNDS}) reached. Treating modify action as skip/reject.")
-            action = "reject"
+            logger.warning(f"Max modification rounds ({Config.MAX_MODIFICATION_ROUNDS}) reached. Forcing approval to apply since user always applies.")
+            action = "approve"
         else:
             job["modification_rounds"] = rounds + 1
             job["status"] = "pending"
