@@ -69,7 +69,5 @@ def reply_handler_node(state: GraphState) -> GraphState:
     elif action == "reject":
         job["status"] = "rejected"
         logger.info("Job action rejected/skipped.")
-        from graph.nodes.apply import record_applied_job
-        record_applied_job(job, status="rejected")
         
     return state

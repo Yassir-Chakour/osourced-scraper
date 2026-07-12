@@ -1,7 +1,4 @@
-import os
-import json
 import logging
-from datetime import datetime
 from playwright.sync_api import Page
 from scrapling.fetchers import StealthyFetcher
 from config import Config
@@ -9,36 +6,6 @@ from graph.state import GraphState, Job
 from telegram_bot.bot import send_message_sync
 
 logger = logging.getLogger(__name__)
-
-
-def record_applied_job(job: Job, status: str = "applied"):
-    """Record job in the permanent applied_jobs.json file."""
-    applied_jobs_path = "data/applied_jobs.json"
-    os.makedirs("data", exist_ok=True)
-
-    data = {"applied": []}
-    if os.path.exists(applied_jobs_path):
-        try:
-            with open(applied_jobs_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read applied_jobs.json: {e}")
-
-    # Check for duplicates to avoid writing the same job twice
-    if not any(item.get("url") == job["link"] for item in data.get("applied", [])):
-        data["applied"].append({
-            "url": job["link"],
-            "applied_at": datetime.now().isoformat(),
-            "title": job["title"],
-            "status": status
-        })
-
-        try:
-            with open(applied_jobs_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Recorded job ({status}) in applied_jobs.json: {job['title']}")
-        except Exception as e:
-            logger.error(f"Failed to write to applied_jobs.json: {e}")
 
 
 def _fill_and_submit_application(page: Page, job: Job) -> None:
@@ -67,8 +34,6 @@ def _fill_and_submit_application(page: Page, job: Job) -> None:
         page.wait_for_timeout(5000)
         job["status"] = "applied"
         send_message_sync(f"\U0001f680 Application Sent for: {job['title']}")
-
-    record_applied_job(job)
 
 
 def apply_node(state: GraphState) -> GraphState:
