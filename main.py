@@ -111,8 +111,12 @@ if __name__ == "__main__":
                 except Exception as e:
                     logger.warning(f"Could not remove old run_state.json: {e}")
             
+            from db.jobs_db import load_jobs
+            pending_jobs = [j for j in load_jobs() if j.get("status") == "pending"]
+            logger.info(f"Loaded {len(pending_jobs)} pending jobs from database on startup.")
+
             initial_state: GraphState = {
-                "jobs": [],
+                "jobs": pending_jobs,
                 "current_job_index": 0,
                 "run_id": datetime.now().isoformat(),
                 "errors": [],

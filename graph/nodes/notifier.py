@@ -19,6 +19,11 @@ def notifier_node(state: GraphState) -> GraphState:
         
     job = jobs[idx]
     
+    # Fast path: skip if already notified (e.g. pending job loaded from DB)
+    if job.get("telegram_message_id"):
+        logger.info(f"Job already notified (msg_id: {job['telegram_message_id']}), skipping notifier.")
+        return state
+        
     # If the job status is already applied, skipped, or error, skip notifying
     if job.get("status") in ("applied", "rejected", "error"):
         logger.info(f"Job status is {job['status']}, skipping notifier node.")

@@ -1,4 +1,5 @@
 import logging
+import json
 from playwright.sync_api import Page
 from scrapling.fetchers import StealthyFetcher
 from config import Config
@@ -10,8 +11,24 @@ logger = logging.getLogger(__name__)
 
 def _fill_and_submit_application(page: Page, job: Job) -> None:
     """Click apply, fill the pitch textarea, and submit (or skip submit in dry-run)."""
+    # Check if page body indicates we already applied
+    body_text = page.locator("body").text_content() or ""
+    if "Beworben" in body_text or "Sie haben sich bereits beworben" in body_text:
+        logger.info(f"Page text indicates already applied: 'Beworben' found. Marking as applied.")
+        job["status"] = "applied"
+        send_message_sync(f"✅ Already applied on website for: {job['title']}")
+        return
+
     apply_btn = page.query_selector('div.cs-text button')
     if not apply_btn:
+        # Check container text one more time as a fallback
+        container = page.query_selector('div.cs-text')
+        container_text = container.text_content() if container else ""
+        if "Beworben" in container_text:
+            logger.info("Apply container text indicates already applied. Marking as applied.")
+            job["status"] = "applied"
+            send_message_sync(f"✅ Already applied on website for: {job['title']}")
+            return
         raise ValueError("Apply button not found on job page.")
 
     apply_btn.click()

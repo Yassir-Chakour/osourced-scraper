@@ -45,6 +45,12 @@ def extract_details_node(state: GraphState) -> GraphState:
         return state
 
     job = jobs[idx]
+    
+    # Fast path: skip if details are already extracted (e.g. pending job loaded from DB)
+    if job.get("description") and job.get("company_name"):
+        logger.info(f"Details already extracted for: {job['title']}")
+        return state
+
     logger.info(f"Extracting details for job: {job['title']} ({job['link']})")
     auth_state_path = "data/auth.json"
 
@@ -56,13 +62,14 @@ def extract_details_node(state: GraphState) -> GraphState:
         StealthyFetcher.adaptive = True
         response = StealthyFetcher.fetch(job["link"], cookies=cookies, headless=True)
 
-        # Check if we already applied (the website shows "Beworben" text/element)
-        already_applied = bool(response.find_by_text("Beworben")) or "Beworben" in response.get_all_text()
+        # Check if we already applied (website shows "Beworben" text)
+        all_text = response.get_all_text() or ""
+        already_applied = "Beworben" in all_text or "Sie haben sich bereits beworben" in all_text
         apply_btn = response.css('div.cs-text button', adaptive=True)
         
         if already_applied or not apply_btn:
             reason = "already applied ('Beworben' text found)" if already_applied else "no apply button found (closed/ended)"
-            logger.info(f"Skipping job: {job['title']} - {reason}. Marking as applied/skipped.")
+            logger.info(f"Skipping job: {job['title']} - {reason}. Marking as applied.")
             job["status"] = "applied"
             return state
 

@@ -118,6 +118,11 @@ def pitch_writer_node(state: GraphState) -> GraphState:
         
     job = jobs[idx]
     
+    # Fast path: skip if pitch is already generated (e.g. pending job loaded from DB)
+    if job.get("pitch"):
+        logger.info(f"Pitch already generated for: {job['title']}")
+        return state
+        
     # If the job has already been applied or skipped or errored out, skip
     if job.get("status") in ("applied", "rejected", "error"):
         logger.info(f"Job status is {job['status']}, skipping pitch writer.")
