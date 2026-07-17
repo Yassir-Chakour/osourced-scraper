@@ -62,11 +62,22 @@ def write_pitch_email(job: Job, pain_points: list, user_feedback: str = "") -> s
         company_name=job["company_name"],
         salary_range=job["salary_range"],
         pain_points=', '.join(pain_points),
+        job_description=job.get("description", ""),
         user_feedback=user_feedback
     )
 
     logger.info("Generating pitch email via LLM...")
     return call_llm(prompt)
+
+def humanize_pitch(pitch: str) -> str:
+    """LLM Step 2b: Humanize the pitch using the Humanizer skill template."""
+    prompt = manager.render("humanize.jinja", email_draft=pitch)
+    logger.info("Humanizing pitch email via LLM...")
+    try:
+        return call_llm(prompt)
+    except Exception as e:
+        logger.error(f"Failed to humanize pitch email: {e}. Returning original.")
+        return pitch
 
 def validate_pitch(pitch: str) -> tuple[bool, str]:
     """Validate word count, placeholder presence, and language."""
@@ -123,7 +134,8 @@ def pitch_writer_node(state: GraphState) -> GraphState:
     for round_num in (1, 2):
         logger.info(f"Pitch writing generation round {round_num}...")
         try:
-            pitch = write_pitch_email(job, job["pain_points"], job.get("user_feedback", ""))
+            draft_pitch = write_pitch_email(job, job["pain_points"], job.get("user_feedback", ""))
+            pitch = humanize_pitch(draft_pitch)
         except requests.RequestException as e:
             logger.error(f"LLM call failed in round {round_num}: {e}")
             break
