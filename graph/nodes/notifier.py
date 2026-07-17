@@ -1,7 +1,7 @@
 import logging
 from graph.state import GraphState
 from telegram_bot.bot import send_message_sync
-from data.jobs_db import add_or_update_job
+from db.jobs_db import add_or_update_job
 
 
 logger = logging.getLogger(__name__)

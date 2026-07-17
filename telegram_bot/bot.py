@@ -62,7 +62,7 @@ async def process_user_feedback(update, job, text: str):
             else:
                 action = "modify"
 
-    from data.jobs_db import add_or_update_job
+    from db.jobs_db import add_or_update_job
     
     if action == "modify":
         rounds = job.get("modification_rounds", 0)
@@ -142,7 +142,7 @@ async def _message_handler(update, context):
     reply_to = update.message.reply_to_message
     job = None
     
-    from data.jobs_db import get_job_by_message_id, get_latest_pending_job
+    from db.jobs_db import get_job_by_message_id, get_latest_pending_job
     
     if reply_to:
         job = get_job_by_message_id(reply_to.message_id)
@@ -272,7 +272,7 @@ def wait_for_reply(timeout_seconds: float = None) -> str:
 
 def check_and_send_next_card() -> None:
     """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active."""
-    from data.jobs_db import load_jobs, add_or_update_job
+    from db.jobs_db import load_jobs, add_or_update_job
     jobs = load_jobs()
     
     # 1. Check if there is an active pending job already sent
