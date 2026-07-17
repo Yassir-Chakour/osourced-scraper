@@ -20,6 +20,10 @@ class Config:
     DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
     RATE_LIMIT_DELAY = int(os.getenv('RATE_LIMIT_DELAY', '30'))
     CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '900'))
+    RUN_MODE = os.getenv('RUN_MODE', 'daily').lower()
+    DAILY_RUN_TIME = os.getenv('DAILY_RUN_TIME', '09:00')
+    TIMEZONE = os.getenv('TIMEZONE', 'Europe/Berlin')
+    RUN_ON_STARTUP = os.getenv('RUN_ON_STARTUP', 'true').lower() == 'true'
 
     @staticmethod
     def validate():

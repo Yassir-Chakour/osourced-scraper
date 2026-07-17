@@ -1,8 +1,9 @@
 import os
 import sys
 import logging
+import zoneinfo
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta
 from config import Config
 from telegram_bot.bot import start_bot, stop_bot
 from graph.graph import app
@@ -39,6 +40,35 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("main")
 
+def get_seconds_until_next_run(run_time_str: str, timezone_str: str) -> float:
+    try:
+        hour, minute = map(int, run_time_str.split(":"))
+    except Exception:
+        hour, minute = 9, 0
+        logger.warning(f"Invalid DAILY_RUN_TIME format '{run_time_str}'. Defaulting to 09:00.")
+
+    tz = None
+    if timezone_str:
+        try:
+            tz = zoneinfo.ZoneInfo(timezone_str)
+        except Exception as e:
+            logger.warning(f"Could not load timezone '{timezone_str}', falling back to local time. Error: {e}")
+            
+    now = datetime.now(tz)
+    
+    # Target time on the same date as now
+    target_time = datetime.combine(
+        now.date(),
+        dt_time(hour=hour, minute=minute),
+        tzinfo=now.tzinfo
+    )
+    
+    if now >= target_time:
+        target_time += timedelta(days=1)
+        
+    delta = target_time - now
+    return delta.total_seconds()
+
 if __name__ == "__main__":
     logger.info("Starting Osourced Scraper application...")
     
@@ -57,10 +87,21 @@ if __name__ == "__main__":
         sys.exit(1)
         
     import time
-    logger.info(f"Daemon mode started. Check interval: {Config.CHECK_INTERVAL} seconds.")
+    if Config.RUN_MODE == "daily":
+        logger.info(f"Daemon mode started in DAILY mode. Target run time: {Config.DAILY_RUN_TIME} (Timezone: {Config.TIMEZONE or 'Local'}).")
+    else:
+        logger.info(f"Daemon mode started in INTERVAL mode. Check interval: {Config.CHECK_INTERVAL} seconds.")
     
+    first_run = True
     try:
         while True:
+            # If we don't run on startup, sleep first on the very first iteration
+            if first_run and not Config.RUN_ON_STARTUP and Config.RUN_MODE == "daily":
+                sleep_seconds = get_seconds_until_next_run(Config.DAILY_RUN_TIME, Config.TIMEZONE)
+                logger.info(f"Startup run bypassed. Sleeping for {sleep_seconds:.1f} seconds until next scheduled run at {Config.DAILY_RUN_TIME}...")
+                time.sleep(sleep_seconds)
+                first_run = False
+                
             # Wipe old run_state.json for a clean new scrape run
             run_state_path = "data/run_state.json"
             if os.path.exists(run_state_path):
@@ -89,9 +130,16 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.exception(f"Unhandled error during LangGraph execution: {e}")
 
+            # Calculate next sleep duration
+            if Config.RUN_MODE == "daily":
+                sleep_seconds = get_seconds_until_next_run(Config.DAILY_RUN_TIME, Config.TIMEZONE)
+                logger.info(f"Run completed. Sleeping for {sleep_seconds:.1f} seconds until next scheduled run at {Config.DAILY_RUN_TIME}...")
+            else:
+                sleep_seconds = float(Config.CHECK_INTERVAL)
+                logger.info(f"Run completed. Sleeping for {sleep_seconds:.1f} seconds before next check...")
                 
-            logger.info(f"Sleeping for {Config.CHECK_INTERVAL} seconds before next run...")
-            time.sleep(Config.CHECK_INTERVAL)
+            first_run = False
+            time.sleep(sleep_seconds)
             
     except KeyboardInterrupt:
         logger.info("Daemon interrupted by user. Shutting down...")
