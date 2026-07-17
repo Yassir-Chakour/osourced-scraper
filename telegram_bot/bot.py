@@ -113,7 +113,7 @@ async def process_user_feedback(update, job, text: str):
         add_or_update_job(job)
         
         # Send next card in queue
-        check_and_send_next_card()
+        await check_and_send_next_card_async()
 
     elif action == "reject":
         job["status"] = "rejected"
@@ -121,7 +121,7 @@ async def process_user_feedback(update, job, text: str):
         await update.message.reply_text(f"⏭️ Job '{job['title']}' übersprungen.")
         
         # Send next card in queue
-        check_and_send_next_card()
+        await check_and_send_next_card_async()
 
 
 async def _message_handler(update, context):
@@ -207,23 +207,27 @@ def stop_bot():
             _thread = None
             logger.info("Telegram Bot stopped.")
 
+async def send_message_async(text: str) -> Optional[int]:
+    """Send text message asynchronously (must be called from the event loop thread)."""
+    if not Config.TELEGRAM_BOT_TOKEN or not Config.TELEGRAM_CHAT_ID:
+        logger.error("Telegram bot token or chat ID is missing in Config.")
+        return None
+    bot_instance = _application.bot if (_application and _application.bot) else Bot(token=Config.TELEGRAM_BOT_TOKEN)
+    msg = await bot_instance.send_message(chat_id=Config.TELEGRAM_CHAT_ID, text=text)
+    return msg.message_id
+
 def send_message_sync(text: str) -> Optional[int]:
     """Send text message synchronously from any thread and return its message ID."""
     if not Config.TELEGRAM_BOT_TOKEN or not Config.TELEGRAM_CHAT_ID:
         logger.error("Telegram bot token or chat ID is missing in Config.")
         return None
 
-    async def _send():
-        bot_instance = _application.bot if (_application and _application.bot) else Bot(token=Config.TELEGRAM_BOT_TOKEN)
-        msg = await bot_instance.send_message(chat_id=Config.TELEGRAM_CHAT_ID, text=text)
-        return msg.message_id
-
     try:
         if _loop and _loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(_send(), _loop)
+            future = asyncio.run_coroutine_threadsafe(send_message_async(text), _loop)
             return future.result(timeout=15)
         else:
-            return asyncio.run(_send())
+            return asyncio.run(send_message_async(text))
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return None
@@ -270,8 +274,8 @@ def wait_for_reply(timeout_seconds: float = None) -> str:
         return "timeout"
 
 
-def check_and_send_next_card() -> None:
-    """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active."""
+async def check_and_send_next_card_async() -> None:
+    """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active (async version)."""
     from db.jobs_db import load_jobs, add_or_update_job
     jobs = load_jobs()
     
@@ -317,8 +321,8 @@ def check_and_send_next_card() -> None:
     if rounds >= 3:
         msg_text += "\n\n⚠️ 3 Runden erreicht. Soll ich trotzdem abschicken oder überspringen?"
         
-    logger.info(f"Sending next job card to Telegram: '{next_job['title']}'...")
-    msg_id = send_message_sync(msg_text)
+    logger.info(f"Sending next job card to Telegram (async): '{next_job['title']}'...")
+    msg_id = await send_message_async(msg_text)
     
     if msg_id:
         next_job["telegram_message_id"] = msg_id
@@ -326,4 +330,12 @@ def check_and_send_next_card() -> None:
         logger.info(f"Next job card sent successfully. Msg ID: {msg_id}")
     else:
         logger.error(f"Failed to send next job card for '{next_job['title']}'.")
+
+def check_and_send_next_card() -> None:
+    """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active (sync wrapper)."""
+    if _loop and _loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(check_and_send_next_card_async(), _loop)
+        future.result(timeout=15)
+    else:
+        asyncio.run(check_and_send_next_card_async())
 
