@@ -62,13 +62,24 @@ def extract_details_node(state: GraphState) -> GraphState:
         StealthyFetcher.adaptive = True
         response = StealthyFetcher.fetch(job["link"], cookies=cookies, headless=True)
 
-        # Check if we already applied (website shows "Beworben" text)
-        all_text = response.get_all_text() or ""
-        already_applied = "Beworben" in all_text or "Sie haben sich bereits beworben" in all_text
+        # Check if we already applied (check container/button instead of whole page to avoid chat history false positives)
+        cs_text = response.css('div.cs-text', adaptive=True)
+        cs_text_content = cs_text[0].get_all_text() or "" if cs_text else ""
         apply_btn = response.css('div.cs-text button', adaptive=True)
         
+        already_applied = False
+        if apply_btn:
+            btn_text = apply_btn[0].css('::text').get()
+            btn_text = btn_text.strip() if btn_text else ""
+            if "beworben" in btn_text.lower():
+                already_applied = True
+        
+        if not already_applied and cs_text_content:
+            if "beworben" in cs_text_content.lower():
+                already_applied = True
+        
         if already_applied or not apply_btn:
-            reason = "already applied ('Beworben' text found)" if already_applied else "no apply button found (closed/ended)"
+            reason = "already applied" if already_applied else "no apply button found (closed/ended)"
             logger.info(f"Skipping job: {job['title']} - {reason}. Marking as applied.")
             job["status"] = "applied"
             return state

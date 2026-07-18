@@ -45,12 +45,6 @@ def scraper_node(state: GraphState) -> GraphState:
                 if not link.startswith("http"):
                     link = urljoin(Config.URL_LOGIN, link)
                 
-                from db.jobs_db import get_job_by_link
-                existing_job = get_job_by_link(link)
-                if existing_job:
-                    logger.info(f"Skipping already scraped job: {title} ({link})")
-                    continue
-                
                 job: Job = {
 
                     "title": title,

@@ -227,7 +227,12 @@ def send_message_sync(text: str) -> Optional[int]:
             future = asyncio.run_coroutine_threadsafe(send_message_async(text), _loop)
             return future.result(timeout=15)
         else:
-            return asyncio.run(send_message_async(text))
+            import concurrent.futures
+            def run_in_new_loop():
+                return asyncio.run(send_message_async(text))
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_in_new_loop)
+                return future.result(timeout=15)
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return None
@@ -249,7 +254,12 @@ def send_photo_sync(photo_path: str, caption: str = None) -> None:
             future = asyncio.run_coroutine_threadsafe(_send_photo(), _loop)
             future.result(timeout=25)
         else:
-            asyncio.run(_send_photo())
+            import concurrent.futures
+            def run_in_new_loop():
+                asyncio.run(_send_photo())
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_in_new_loop)
+                future.result(timeout=25)
     except Exception as e:
         logger.error(f"Failed to send Telegram photo: {e}")
 
