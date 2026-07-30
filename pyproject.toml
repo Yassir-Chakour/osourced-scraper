@@ -3,7 +3,7 @@ name = "osourced-scraper"
 version = "0.1.0"
 description = "A bot that scrapes osourced.is for new jobs and applies on my behalf"
 authors = ["Yassir Chakour <yassir@shinobiautomation.com>"]
-readme = "PLAN.md"
+readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
