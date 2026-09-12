@@ -7,6 +7,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 from config import Config
 from prompts import guardrail_manager
 from db.jobs_db import load_jobs
+from db.ignored_companies import get_ignored_companies, add_ignored_company, remove_ignored_company
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,12 @@ async def _start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = (
-        "👋 **Hallo Shinobi!**\n\n"
-        "Ich bin dein autonomer Osourced-Bewerbungs-Bot.\n\n"
+        "🤖 **Osourced Scraper & Auto-Apply Bot**\n\n"
         "⚙️ **So funktioniert das System:**\n"
         "• Jeden Morgen um **09:00 Uhr** scanne ich neue Stellenangebote.\n"
         "• Neue Stellen werden **vollautomatisch** beworben.\n"
         "• Bereits beworbene Stellen werden sofort im Speicher übersprungen.\n"
+        "• Stellen von blockierten Firmen werden automatisch ignoriert.\n"
         "• Nach dem Durchlauf sende ich dir **1 zufälliges Bewerbungsbeispiel** zur Überprüfung.\n"
         "• Wenn es keine neuen Stellen gab, erhältst du eine kurze Info.\n\n"
         "🧠 **Prompt-Tuning per Chat:**\n"
@@ -59,6 +60,9 @@ async def _start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 **Befehle:**\n"
         "/guardrails - Zeigt alle aktuell aktiven Prompt-Regeln\n"
         "/reset_guardrails - Setzt alle gelernten Regeln zurück\n"
+        "/ignored - Zeigt blockierte Firmen\n"
+        "/ignore <Firma> - Blockiert eine Firma\n"
+        "/unignore <Firma> - Entfernt eine Firma von der Blockierliste\n"
         "/status - Zeigt den aktuellen Datenbankstatus"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -98,6 +102,60 @@ async def _reset_guardrails_command(update: Update, context: ContextTypes.DEFAUL
     await update.message.reply_text(result)
 
 
+async def _ignored_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /ignored command to list all blocked companies."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    companies = get_ignored_companies()
+    if not companies:
+        await update.message.reply_text("📋 Keine blockierten Firmen hinterlegt.")
+        return
+
+    list_text = "\n".join(f"• `{c}`" for c in companies)
+    await update.message.reply_text(
+        f"🚫 **Blockierte Firmen ({len(companies)}):**\n\n{list_text}\n\n"
+        f"Firma hinzufügen: `/ignore <Name>`\n"
+        f"Firma entfernen: `/unignore <Name>`",
+        parse_mode="Markdown"
+    )
+
+
+async def _ignore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /ignore <company> command."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Bitte gib einen Firmennamen an:\n`/ignore Firmenname`", parse_mode="Markdown")
+        return
+
+    company_name = " ".join(context.args).strip()
+    if add_ignored_company(company_name):
+        await update.message.reply_text(f"🚫 **Firma blockiert:** `{company_name}` wurde zur Ausschlussliste hinzugefügt. Bewerbungen für diese Firma werden ab jetzt übersprungen.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Fehler beim Hinzufügen von `{company_name}`.")
+
+
+async def _unignore_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /unignore <company> command."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Bitte gib einen Firmennamen an:\n`/unignore Firmenname`", parse_mode="Markdown")
+        return
+
+    company_name = " ".join(context.args).strip()
+    if remove_ignored_company(company_name):
+        await update.message.reply_text(f"✅ **Firma freigegeben:** `{company_name}` wurde von der Ausschlussliste entfernt.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Fehler beim Entfernen von `{company_name}`.")
+
+
 async def _status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command."""
     chat_id = update.effective_chat.id
@@ -109,6 +167,7 @@ async def _status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rejected = sum(1 for j in jobs if j.get("status") == "rejected")
     errors = sum(1 for j in jobs if j.get("status") == "error")
     guardrails_count = len(guardrail_manager.get_guardrails())
+    ignored_companies_count = len(get_ignored_companies())
 
     msg = (
         f"📊 **System-Status:**\n\n"
@@ -116,6 +175,7 @@ async def _status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Erfolgreich beworben: {applied}\n"
         f"• Übersprungen / Ignoriert: {rejected}\n"
         f"• Fehlerhafte Bewerbungen: {errors}\n"
+        f"• Blockierte Firmen: {ignored_companies_count}\n"
         f"• Aktive Prompt-Guardrails: {guardrails_count}\n"
         f"• Modus: Täglich um {Config.DAILY_RUN_TIME} Uhr ({Config.TIMEZONE or 'Europe/Berlin'})"
     )
@@ -158,6 +218,9 @@ def start_bot():
     _application.add_handler(CommandHandler(["start", "help"], _start_command))
     _application.add_handler(CommandHandler("guardrails", _guardrails_command))
     _application.add_handler(CommandHandler("reset_guardrails", _reset_guardrails_command))
+    _application.add_handler(CommandHandler("ignored", _ignored_command))
+    _application.add_handler(CommandHandler("ignore", _ignore_command))
+    _application.add_handler(CommandHandler("unignore", _unignore_command))
     _application.add_handler(CommandHandler("status", _status_command))
 
     # Text messages (prompt tuning feedback)

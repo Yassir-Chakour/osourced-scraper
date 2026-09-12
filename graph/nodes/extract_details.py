@@ -99,10 +99,10 @@ def extract_details_node(state: GraphState) -> GraphState:
         job["salary_range"] = _extract_salary_range(response)
         job["company_name"] = _extract_company_name(response)
 
-        # Skip if the company is in the ignore list (e.g. My Talent / MyTalent / Mytalent.io)
-        comp_lower = job["company_name"].lower().replace(" ", "").strip()
-        if "mytalent" in comp_lower:
-            logger.info(f"Skipping job: '{job['title']}' - company '{job['company_name']}' is on the ignore list.")
+        # Skip if the company is in the ignored companies list
+        from db.ignored_companies import is_company_ignored
+        if is_company_ignored(job["company_name"]):
+            logger.info(f"Skipping job: '{job['title']}' - company '{job['company_name']}' is on the ignored companies list.")
             job["status"] = "rejected"
             add_or_update_job(job)
             return state
