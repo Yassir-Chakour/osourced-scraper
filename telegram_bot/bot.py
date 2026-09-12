@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import logging
+import re
 from typing import Optional, List
 from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
@@ -182,26 +183,98 @@ async def _status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+TRIGGER_AWAITING_REGEX = re.compile(
+    r"^(add\s+this(\s+company)?|add\s+company|add\s+to\s+blacklist|blacklist(\s+company)?|block\s+company|firma\s+sperren|firma\s+blockieren|sperre\s+firma|firma\s+hinzufügen|auf\s+blacklist(\s+setzen)?)$",
+    re.IGNORECASE
+)
+
+DIRECT_ADD_PATTERNS = [
+    re.compile(r"^add\s+this(?:\s+company)?[:\s]+(.+)$", re.IGNORECASE),
+    re.compile(r"^(?:add|füge)\s+(?:this\s+company\s+|the\s+company\s+|die\s+firma\s+|firma\s+)?(.+?)\s+(?:to\s+(?:the\s+)?blacklist|zur\s+blacklist|auf\s+die\s+blacklist)$", re.IGNORECASE),
+    re.compile(r"^(?:blacklist|block|sperre|ignoriere)\s+(?:die\s+firma\s+|firma\s+|company\s+)?(.+)$", re.IGNORECASE),
+    re.compile(r"^setze\s+(.+?)\s+auf\s+die\s+blacklist$", re.IGNORECASE),
+]
+
+
 async def _message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process natural language user feedback to tune prompt guardrails."""
+    """Process natural language user feedback, commands, and blacklist additions."""
     chat_id = update.effective_chat.id
     if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
         logger.warning(f"Received message from unauthorized chat ID: {chat_id}")
         return
 
-    text = update.message.text
+    text = update.message.text or update.message.caption
     if not text:
         return
 
-    logger.info(f"Received user prompt feedback on Telegram: '{text}'")
-    status_msg = await update.message.reply_text("⏳ Analysiere Feedback und aktualisiere Prompt-Regeln...")
+    text_clean = text.strip()
+
+    # 1. State machine: Was the bot waiting for a company name to blacklist?
+    if context.user_data.get("awaiting_company_blacklist"):
+        if text_clean.lower() in ("cancel", "abbrechen", "/cancel"):
+            context.user_data["awaiting_company_blacklist"] = False
+            await update.message.reply_text("❌ Vorgang abgebrochen.")
+            return
+
+        add_ignored_company(text_clean)
+        context.user_data["awaiting_company_blacklist"] = False
+        await update.message.reply_text(
+            f"🚫 **Firma blockiert:** `{text_clean}` wurde zur Blacklist hinzugefügt.\n\n"
+            f"Stellenangebote dieser Firma werden ab jetzt vollautomatisch übersprungen.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # 2. Trigger two-step conversation: "add this", "add company", "add to blacklist", etc.
+    if TRIGGER_AWAITING_REGEX.match(text_clean):
+        context.user_data["awaiting_company_blacklist"] = True
+        await update.message.reply_text(
+            "👍 **Verstanden!** Sende mir bitte als Nächstes den Namen der Firma, die ich auf die Blacklist setzen soll.\n\n"
+            "_(Tippe `abbrechen`, um abzubrechen)_",
+            parse_mode="Markdown"
+        )
+        return
+
+    # 3. Direct fast-path regex: "add World Bite to blacklist", "block World Bite", "sperre World Bite"
+    for pattern in DIRECT_ADD_PATTERNS:
+        match = pattern.match(text_clean)
+        if match:
+            comp = match.group(1).strip().strip('"\'')
+            if comp and comp.lower() not in ("company", "firma", "this"):
+                add_ignored_company(comp)
+                await update.message.reply_text(
+                    f"🚫 **Firma blockiert:** `{comp}` wurde zur Blacklist hinzugefügt.\n\n"
+                    f"Stellenangebote dieser Firma werden ab jetzt vollautomatisch übersprungen.",
+                    parse_mode="Markdown"
+                )
+                return
+
+    # 4. Fallback to LLM for complex instructions, mixed feedback, or prompt tuning
+    logger.info(f"Received natural language instruction on Telegram: '{text_clean}'")
+    status_msg = await update.message.reply_text("⏳ Verarbeite Anweisung...")
 
     try:
-        reply = await asyncio.to_thread(guardrail_manager.update_guardrails_from_feedback, text)
+        reply = await asyncio.to_thread(guardrail_manager.process_user_feedback, text_clean)
         await status_msg.edit_text(reply, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"Error processing prompt feedback: {e}")
-        await status_msg.edit_text(f"❌ Fehler bei der Aktualisierung: {e}")
+        logger.error(f"Error processing feedback: {e}")
+        await status_msg.edit_text(f"❌ Fehler bei der Verarbeitung: {e}")
+
+
+async def _photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming photos without captions by asking for the company name."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    if not update.message.caption:
+        context.user_data["awaiting_company_blacklist"] = True
+        await update.message.reply_text(
+            "📸 **Screenshot erhalten!**\n\n"
+            "Sende mir bitte den Namen der Firma als Textnachricht, damit ich sie auf die Blacklist setzen kann.\n\n"
+            "_(Tippe `abbrechen`, um abzubrechen)_",
+            parse_mode="Markdown"
+        )
 
 
 def start_bot():
@@ -223,8 +296,11 @@ def start_bot():
     _application.add_handler(CommandHandler("unignore", _unignore_command))
     _application.add_handler(CommandHandler("status", _status_command))
 
-    # Text messages (prompt tuning feedback)
-    _application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _message_handler))
+    # Photo handler (screenshots)
+    _application.add_handler(MessageHandler(filters.PHOTO, _photo_handler))
+
+    # Text & captioned messages
+    _application.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, _message_handler))
 
     def run_app():
         asyncio.set_event_loop(_loop)
