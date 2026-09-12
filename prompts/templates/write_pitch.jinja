@@ -43,6 +43,14 @@ KI-WORKFLOW-ARCHITEKT & AUTOMATISIERUNGSEXPERTE
   Yassir Chakour
 - Format: Nur der reine E-Mail-Text. Kein Betreff, kein Markdown.
 
+{% if guardrails %}
+# PERSÖNLICHE GUARDRAILS (VOM NUTZER FESTGELEGT)
+WICHTIG: Befolge strikt die folgenden benutzerdefinierten Regeln für alle Bewerbungen. Diese Regeln haben oberste Priorität:
+{% for rule in guardrails %}
+- {{ rule }}
+{% endfor %}
+{% endif %}
+
 {% if user_feedback %}
 # FEEDBACK VOM NUTZER / USER FEEDBACK
 WICHTIG: Passe die E-Mail basierend auf folgendem Feedback an. Dieses Feedback hat höchste Priorität und überschreibt jegliche widersprüchlichen Standardregeln:
@@ -50,3 +58,4 @@ WICHTIG: Passe die E-Mail basierend auf folgendem Feedback an. Dieses Feedback h
 {% endif %}
 
 # AUSGABE
+

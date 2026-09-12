@@ -55,7 +55,10 @@ def extract_pain_points(job: Job) -> list:
         return []
 
 def write_pitch_email(job: Job, pain_points: list, user_feedback: str = "") -> str:
-    """LLM Step 2: Write pitch email in German using pain points."""
+    """LLM Step 2: Write pitch email in German using pain points and active guardrails."""
+    from prompts.guardrail_manager import get_guardrails
+    active_guardrails = get_guardrails()
+
     prompt = manager.render(
         "write_pitch.jinja",
         job_title=job["title"],
@@ -63,10 +66,11 @@ def write_pitch_email(job: Job, pain_points: list, user_feedback: str = "") -> s
         salary_range=job["salary_range"],
         pain_points=', '.join(pain_points),
         job_description=job.get("description", ""),
+        guardrails=active_guardrails,
         user_feedback=user_feedback
     )
 
-    logger.info("Generating pitch email via LLM...")
+    logger.info("Generating pitch email via LLM (with guardrails)...")
     return call_llm(prompt)
 
 def humanize_pitch(pitch: str) -> str:

@@ -116,34 +116,8 @@ workflow.add_conditional_edges(
     {"next_job": "next_job", "pitch_writer": "pitch_writer"}
 )
 
-# Linear flow for pitch writing and feedback
-workflow.add_edge("pitch_writer", "notifier")
-workflow.add_edge("notifier", "next_job")
-
-
-# Define conditional edges from reply_handler
-def route_after_reply_handler(state: GraphState):
-    idx = state.get("current_job_index", 0)
-    jobs = state.get("jobs", [])
-    if idx < len(jobs):
-        status = jobs[idx].get("status")
-        if status == "pending":
-            return "pitch_writer"
-        elif status == "approved":
-            return "apply"
-    return "next_job"
-
-workflow.add_conditional_edges(
-    "reply_handler",
-    route_after_reply_handler,
-    {
-        "pitch_writer": "pitch_writer",
-        "apply": "apply",
-        "next_job": "next_job"
-    }
-)
-
-# Edge from apply to next_job
+# Autonomous flow: pitch_writer -> apply -> next_job
+workflow.add_edge("pitch_writer", "apply")
 workflow.add_edge("apply", "next_job")
 
 # Define conditional edges from next_job

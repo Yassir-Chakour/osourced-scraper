@@ -1,356 +1,151 @@
 import asyncio
 import threading
 import logging
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, CallbackQueryHandler
+from typing import Optional, List
+from telegram import Bot, Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from config import Config
+from prompts import guardrail_manager
+from db.jobs_db import load_jobs
 
 logger = logging.getLogger(__name__)
 
-# Shared variables for thread communication
-_reply_event = threading.Event()
-_latest_reply = None
 _loop = None
 _thread = None
 _application = None
-_session_job_links = set()
 
-from typing import Optional
 
-async def process_user_feedback(update, job, text: str):
-    fb = text.lower().strip().strip("!.,?-")
-    action = None
-    instructions = ""
-    
-    # Identify message object to reply to
-    msg = None
-    if hasattr(update, "message") and update.message:
-        msg = update.message
-    elif hasattr(update, "callback_query") and update.callback_query:
-        msg = update.callback_query.message
-    else:
-        msg = getattr(update, "message", None)
-        
-    if not msg:
-        logger.error("Could not find message object to reply to.")
+def chunk_text(text: str, max_length: int = 4000) -> List[str]:
+    """Splits a long text string into safe chunks <= max_length characters without splitting lines."""
+    if len(text) <= max_length:
+        return [text]
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if current_len + len(line) > max_length:
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_len = 0
+            while len(line) > max_length:
+                chunks.append(line[:max_length])
+                line = line[max_length:]
+        current_chunk.append(line)
+        current_len += len(line)
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+    return chunks
+
+
+async def _start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start or /help."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
         return
-    
-    # Exact keywords list for direct approval/rejection
-    approve_keywords = {"send", "senden", "go", "yes", "ja", "ok", "okay", "gut", "schicken", "passt", "yep", "perfekt"}
-    reject_keywords = {"skip", "nein", "no", "nope", "lassen", "überspringen", "nächste", "next", "ne"}
-    
-    if fb in approve_keywords:
-        action = "approve"
-    elif fb in reject_keywords:
-        action = "reject"
-                
-    if action:
-        logger.info(f"Direct match found: action classified as '{action}' without calling LLM.")
-    else:
-        logger.info("Feedback is not a simple command, passing to LLM for analysis...")
-        from prompts.template_manager import manager
-        from graph.nodes.pitch_writer import call_llm
-        prompt = manager.render("reply_handler.jinja", user_feedback=text)
-        action = "modify"
-        instructions = text
 
-        try:
-            response_text = await asyncio.to_thread(call_llm, prompt, json_mode=True)
-            if response_text:
-                import json
-                data = json.loads(response_text)
-                raw_action = data.get("action", "modify").lower().strip()
-                if raw_action in ("send", "apply", "approve", "yes", "go"):
-                    action = "approve"
-                elif raw_action in ("reject", "skip", "no"):
-                    action = "reject"
-                else:
-                    action = "modify"
-                instructions = data.get("modification_instructions", text)
-        except Exception as e:
-            logger.error(f"Failed to classify reply via LLM: {e}")
-            if any(w in fb for w in approve_keywords):
-                action = "approve"
-            elif any(w in fb for w in reject_keywords):
-                action = "reject"
-            else:
-                action = "modify"
-
-    from db.jobs_db import add_or_update_job
-    
-    if action == "modify":
-        rounds = job.get("modification_rounds", 0)
-        if rounds >= Config.MAX_MODIFICATION_ROUNDS:
-            await msg.reply_text(f"⚠️ Max rounds reached for '{job['title']}'. Forcing approval/application...")
-            action = "approve"
-        else:
-            job["modification_rounds"] = rounds + 1
-            job["status"] = "pending"
-            job["user_feedback"] = instructions
-            await msg.reply_text(f"🔄 Ändere Pitch für '{job['title']}'...")
-            
-            from graph.nodes.pitch_writer import write_pitch_email
-            try:
-                new_pitch = await asyncio.to_thread(write_pitch_email, job, job["pain_points"], instructions)
-                job["pitch"] = new_pitch
-                
-                msg_text = (
-                    f"🔄 Pitch updated (Round {job['modification_rounds']})\n\n"
-                    f"📌 {job['title']}\n"
-                    f"🏢 {job.get('company_name', 'Unknown Company')}\n\n"
-                    f"✉️ Generierter Pitch:\n"
-                    f"─────────────────────\n"
-                    f"{new_pitch}\n"
-                    f"─────────────────────\n\n"
-                    f"Antwort: gut so / überspringen / kürzer machen / ..."
-                )
-                new_msg = await msg.reply_text(msg_text, reply_markup=_get_job_card_keyboard())
-                job["telegram_message_id"] = new_msg.message_id
-                add_or_update_job(job)
-            except Exception as e:
-                logger.error(f"Failed to regenerate pitch: {e}")
-                await msg.reply_text(f"❌ Fehler bei der Pitch-Generierung: {e}")
-                
-    if action in ("approve", "reject"):
-        # Remove buttons from original job card
-        if job.get("telegram_message_id"):
-            try:
-                await _application.bot.edit_message_reply_markup(
-                    chat_id=Config.TELEGRAM_CHAT_ID,
-                    message_id=job["telegram_message_id"],
-                    reply_markup=None
-                )
-            except Exception as e:
-                logger.warning(f"Could not remove keyboard markup: {e}")
-
-    if action == "approve":
-        job["status"] = "approved"
-        add_or_update_job(job)
-        await msg.reply_text(f"🚀 Bewerbung für '{job['title']}' wird abgeschickt...")
-        
-        from graph.nodes.apply import apply_job
-        success = await asyncio.to_thread(apply_job, job)
-        if success:
-            job["status"] = "applied"
-            await msg.reply_text(f"✅ Bewerbung für '{job['title']}' erfolgreich versendet!")
-        else:
-            job["status"] = "error"
-            await msg.reply_text(f"❌ Bewerbung für '{job['title']}' fehlgeschlagen (siehe Logs).")
-        add_or_update_job(job)
-        
-        # Send next card in queue
-        await check_and_send_next_card_async()
-
-    elif action == "reject":
-        job["status"] = "rejected"
-        add_or_update_job(job)
-        await msg.reply_text(f"⏭️ Job '{job['title']}' übersprungen.")
-        
-        # Send next card in queue
-        await check_and_send_next_card_async()
+    msg = (
+        "👋 **Hallo Shinobi!**\n\n"
+        "Ich bin dein autonomer Osourced-Bewerbungs-Bot.\n\n"
+        "⚙️ **So funktioniert das System:**\n"
+        "• Jeden Morgen um **09:00 Uhr** scanne ich neue Stellenangebote.\n"
+        "• Neue Stellen werden **vollautomatisch** beworben.\n"
+        "• Bereits beworbene Stellen werden sofort im Speicher übersprungen.\n"
+        "• Nach dem Durchlauf sende ich dir **1 zufälliges Bewerbungsbeispiel** zur Überprüfung.\n"
+        "• Wenn es keine neuen Stellen gab, erhältst du eine kurze Info.\n\n"
+        "🧠 **Prompt-Tuning per Chat:**\n"
+        "Du kannst mir jederzeit eine Nachricht schreiben (z. B. *'Verwende ab jetzt immer Du statt Sie'* oder *'Erwähne kein n8n mehr'*). "
+        "Ich aktualisiere meine Prompt-Guardrails sofort für alle zukünftigen Bewerbungen!\n\n"
+        "📋 **Befehle:**\n"
+        "/guardrails - Zeigt alle aktuell aktiven Prompt-Regeln\n"
+        "/reset_guardrails - Setzt alle gelernten Regeln zurück\n"
+        "/status - Zeigt den aktuellen Datenbankstatus"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
-async def _message_handler(update, context):
-    global _latest_reply
-    # Only listen to the configured chat ID
+async def _guardrails_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /guardrails command."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    rules = guardrail_manager.get_guardrails()
+    if not rules:
+        await update.message.reply_text(
+            "📋 **Aktive Guardrails:** Keine benutzerdefinierten Regeln hinterlegt.\n\n"
+            "Schreibe mir einfach deine Wünsche im Chat (z. B. *\"Fasse dich kürzer\"*), um Regeln hinzuzufügen.",
+            parse_mode="Markdown"
+        )
+        return
+
+    rules_text = "\n".join(f"• {r}" for r in rules)
+    await update.message.reply_text(
+        f"📋 **Aktive Prompt-Guardrails ({len(rules)}):**\n\n"
+        f"{rules_text}\n\n"
+        f"_Diese Regeln werden bei jeder Bewerbung automatisch vom System-Prompt beachtet._",
+        parse_mode="Markdown"
+    )
+
+
+async def _reset_guardrails_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /reset_guardrails command."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    result = guardrail_manager.reset_guardrails()
+    await update.message.reply_text(result)
+
+
+async def _status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    jobs = load_jobs()
+    applied = sum(1 for j in jobs if j.get("status") == "applied")
+    rejected = sum(1 for j in jobs if j.get("status") == "rejected")
+    errors = sum(1 for j in jobs if j.get("status") == "error")
+    guardrails_count = len(guardrail_manager.get_guardrails())
+
+    msg = (
+        f"📊 **System-Status:**\n\n"
+        f"• Erfasste Stellen in DB: {len(jobs)}\n"
+        f"• Erfolgreich beworben: {applied}\n"
+        f"• Übersprungen / Ignoriert: {rejected}\n"
+        f"• Fehlerhafte Bewerbungen: {errors}\n"
+        f"• Aktive Prompt-Guardrails: {guardrails_count}\n"
+        f"• Modus: Täglich um {Config.DAILY_RUN_TIME} Uhr ({Config.TIMEZONE or 'Europe/Berlin'})"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def _message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process natural language user feedback to tune prompt guardrails."""
     chat_id = update.effective_chat.id
     if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
         logger.warning(f"Received message from unauthorized chat ID: {chat_id}")
         return
-    
+
     text = update.message.text
     if not text:
         return
-        
-    logger.info(f"Received Telegram message: {text}")
-    
-    # Check for send all command
-    if text.lower().strip() in ("send all", "alles senden"):
-        asyncio.create_task(send_all_jobs(update))
-        return
-    
-    # 1. Identify which job this feedback relates to
-    reply_to = update.message.reply_to_message
-    job = None
-    
-    from db.jobs_db import get_job_by_message_id, get_latest_pending_job
-    
-    if reply_to:
-        job = get_job_by_message_id(reply_to.message_id)
-        if not job:
-            logger.info(f"User replied to message {reply_to.message_id}, but no job found in database.")
-            
-    # Fallback to the latest pending job
-    if not job:
-        job = get_latest_pending_job()
-        
-    if not job:
-        await update.message.reply_text("Kein ausstehender Job gefunden, auf den sich diese Nachricht bezieht.")
-        return
-        
-    # Check if job is already decided
-    if job.get("status") in ("applied", "rejected", "error"):
-        await update.message.reply_text(f"Dieser Job ('{job['title']}') wurde bereits verarbeitet (Status: {job['status']}).")
-        return
 
-    # Process feedback in the background
-    asyncio.create_task(process_user_feedback(update, job, text))
-    
-    # Legacy state update for backward compatibility
-    _latest_reply = text
-    _reply_event.set()
+    logger.info(f"Received user prompt feedback on Telegram: '{text}'")
+    status_msg = await update.message.reply_text("⏳ Analysiere Feedback und aktualisiere Prompt-Regeln...")
 
-
-def _get_job_card_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [
-            InlineKeyboardButton("🚀 Abschicken (Send)", callback_data="approve"),
-            InlineKeyboardButton("⏭️ Überspringen (Skip)", callback_data="reject")
-        ],
-        [
-            InlineKeyboardButton("⚡ Alle Abschicken (Send All)", callback_data="send_all")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-async def send_final_session_report() -> None:
-    global _session_job_links
-    if not _session_job_links:
-        return
-        
-    from db.jobs_db import load_jobs
-    all_jobs = load_jobs()
-    
-    session_jobs = [j for j in all_jobs if j.get("link") in _session_job_links]
-    if not session_jobs:
-        return
-        
-    applied = 0
-    rejected = 0
-    error_count = 0
-    
-    job_details_lines = []
-    for job in session_jobs:
-        status = job.get("status", "pending")
-        title = job.get("title", "Unknown Title")
-        if status == "applied":
-            applied += 1
-            job_details_lines.append(f"✅ Applied: {title}")
-        elif status == "rejected":
-            rejected += 1
-            job_details_lines.append(f"⏭️ Skipped: {title}")
-        elif status == "error":
-            error_count += 1
-            job_details_lines.append(f"❌ Error: {title} ({job.get('error_message', 'Unknown error')})")
-            
-    report_lines = [
-        "📊 Osourced Scraper Session Report",
-        f"Total Jobs Processed: {len(session_jobs)}",
-        f"• Applied: {applied}",
-        f"• Skipped/Rejected: {rejected}",
-        f"• Errors: {error_count}",
-    ]
-    
-    if job_details_lines:
-        report_lines.append("\n📋 Job Breakdown:")
-        report_lines.extend(job_details_lines)
-        
-    report_text = "\n".join(report_lines)
-    
-    logger.info("Sending final session report to Telegram...")
-    await send_message_async(report_text)
-    _session_job_links.clear()
-
-
-async def send_all_jobs(update_or_query) -> None:
-    from db.jobs_db import load_jobs, add_or_update_job
-    from graph.nodes.apply import apply_job
-    
-    jobs = load_jobs()
-    pending_jobs = [j for j in jobs if j.get("status") == "pending"]
-    
-    is_query = hasattr(update_or_query, "answer")
-    msg_target = update_or_query.message if is_query else update_or_query.message
-    
-    if not pending_jobs:
-        await msg_target.reply_text("Keine ausstehenden Bewerbungen zum Abschicken gefunden.")
-        return
-        
-    if is_query:
-        try:
-            await update_or_query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-            
-    status_msg = await msg_target.reply_text(f"⚡ Sende {len(pending_jobs)} ausstehende Bewerbungen ab...")
-    
-    for job in pending_jobs:
-        _session_job_links.add(job["link"])
-        
-        # Ensure pitch is generated
-        if not job.get("pitch"):
-            from graph.nodes.pitch_writer import pitch_writer_node
-            from graph.state import GraphState
-            dummy_state: GraphState = {"jobs": [job], "current_job_index": 0, "errors": []}
-            try:
-                pitch_writer_node(dummy_state)
-                job = dummy_state["jobs"][0]
-            except Exception as e:
-                logger.error(f"Failed to generate pitch for send_all: {e}")
-                
-        await status_msg.reply_text(f"⏳ Bewerbe für: {job['title']}...")
-        success = await asyncio.to_thread(apply_job, job)
-        if success:
-            job["status"] = "applied"
-        else:
-            job["status"] = "error"
-        add_or_update_job(job)
-        
-    await status_msg.reply_text("✅ Alle ausstehenden Bewerbungen verarbeitet!")
-    await send_final_session_report()
-
-
-async def _callback_handler(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    chat_id = update.effective_chat.id
-    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
-        logger.warning(f"Received callback from unauthorized chat ID: {chat_id}")
-        return
-        
-    data = query.data
-    logger.info(f"Received CallbackQuery: {data}")
-    
-    if data == "send_all":
-        asyncio.create_task(send_all_jobs(query))
-        return
-        
-    message_id = query.message.message_id
-    from db.jobs_db import get_job_by_message_id
-    job = get_job_by_message_id(message_id)
-    
-    if not job:
-        await query.message.reply_text("Kein ausstehender Job zu dieser Nachricht gefunden.")
-        return
-        
-    if job.get("status") in ("applied", "rejected", "error"):
-        await query.message.reply_text(f"Dieser Job ('{job['title']}') wurde bereits verarbeitet (Status: {job['status']}).")
-        return
-        
     try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-        
-    if data == "approve":
-        asyncio.create_task(process_user_feedback(query, job, "ja"))
-    elif data == "reject":
-        asyncio.create_task(process_user_feedback(query, job, "skip"))
+        reply = await asyncio.to_thread(guardrail_manager.update_guardrails_from_feedback, text)
+        await status_msg.edit_text(reply, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error processing prompt feedback: {e}")
+        await status_msg.edit_text(f"❌ Fehler bei der Aktualisierung: {e}")
 
 
 def start_bot():
+    """Start the Telegram bot in a dedicated daemon thread."""
     global _loop, _thread, _application
     if _thread and _thread.is_alive():
         logger.warning("Telegram Bot is already running.")
@@ -358,15 +153,22 @@ def start_bot():
 
     _loop = asyncio.new_event_loop()
     _application = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
+
+    # Commands
+    _application.add_handler(CommandHandler(["start", "help"], _start_command))
+    _application.add_handler(CommandHandler("guardrails", _guardrails_command))
+    _application.add_handler(CommandHandler("reset_guardrails", _reset_guardrails_command))
+    _application.add_handler(CommandHandler("status", _status_command))
+
+    # Text messages (prompt tuning feedback)
     _application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _message_handler))
-    _application.add_handler(CallbackQueryHandler(_callback_handler))
-    
+
     def run_app():
         asyncio.set_event_loop(_loop)
         _loop.run_until_complete(_application.initialize())
         _loop.run_until_complete(_application.updater.start_polling(drop_pending_updates=True))
         _loop.run_until_complete(_application.start())
-        logger.info("Telegram Bot started polling.")
+        logger.info("Telegram Bot started polling (with prompt tuning listener).")
         _loop.run_forever()
 
     _thread = threading.Thread(target=run_app, daemon=True)
@@ -374,6 +176,7 @@ def start_bot():
 
 
 def stop_bot():
+    """Stop the Telegram bot and its thread cleanly."""
     global _loop, _application, _thread
     if _loop and _application:
         try:
@@ -390,13 +193,35 @@ def stop_bot():
 
 
 async def send_message_async(text: str, reply_markup=None) -> Optional[int]:
-    """Send text message asynchronously (must be called from the event loop thread)."""
+    """Send text message asynchronously, safely chunking text to prevent 4096 char limits."""
     if not Config.TELEGRAM_BOT_TOKEN or not Config.TELEGRAM_CHAT_ID:
         logger.error("Telegram bot token or chat ID is missing in Config.")
         return None
+
     bot_instance = _application.bot if (_application and _application.bot) else Bot(token=Config.TELEGRAM_BOT_TOKEN)
-    msg = await bot_instance.send_message(chat_id=Config.TELEGRAM_CHAT_ID, text=text, reply_markup=reply_markup)
-    return msg.message_id
+    chunks = chunk_text(text, max_length=3900)
+    last_msg_id = None
+
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == len(chunks) - 1 else None
+        try:
+            msg = await bot_instance.send_message(
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                text=chunk,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+            last_msg_id = msg.message_id
+        except Exception:
+            # Fallback without markdown if markdown parsing fails
+            msg = await bot_instance.send_message(
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                text=chunk,
+                reply_markup=markup
+            )
+            last_msg_id = msg.message_id
+
+    return last_msg_id
 
 
 def send_message_sync(text: str, reply_markup=None) -> Optional[int]:
@@ -408,14 +233,14 @@ def send_message_sync(text: str, reply_markup=None) -> Optional[int]:
     try:
         if _loop and _loop.is_running():
             future = asyncio.run_coroutine_threadsafe(send_message_async(text, reply_markup), _loop)
-            return future.result(timeout=15)
+            return future.result(timeout=20)
         else:
             import concurrent.futures
             def run_in_new_loop():
                 return asyncio.run(send_message_async(text, reply_markup))
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(run_in_new_loop)
-                return future.result(timeout=15)
+                return future.result(timeout=20)
     except Exception as e:
         logger.error(f"Failed to send Telegram message: {e}")
         return None
@@ -447,95 +272,8 @@ def send_photo_sync(photo_path: str, caption: str = None) -> None:
         logger.error(f"Failed to send Telegram photo: {e}")
 
 
-def clear_reply() -> None:
-    """Clear any previous reply state."""
-    global _latest_reply
-    _reply_event.clear()
-    _latest_reply = None
-    logger.info("Cleared previous Telegram reply state.")
-
-
-def wait_for_reply(timeout_seconds: float = None) -> str:
-    """Block the thread until a message is received from the user, or timeout."""
-    global _latest_reply
-    
-    timeout_str = f"{timeout_seconds}s" if timeout_seconds is not None else "indefinite"
-    logger.info(f"Waiting for Telegram reply (timeout: {timeout_str})...")
-    is_set = _reply_event.wait(timeout=timeout_seconds)
-    if is_set:
-        return _latest_reply
-    else:
-        logger.warning("Timeout waiting for user reply.")
-        return "timeout"
-
-
-async def check_and_send_next_card_async() -> None:
-    """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active (async version)."""
-    from db.jobs_db import load_jobs, add_or_update_job
-    jobs = load_jobs()
-    
-    # Check if there are no more pending jobs at all
-    pending_unsent = [j for j in jobs if j.get("status") == "pending" and j.get("telegram_message_id") is None]
-    pending_sent = [j for j in jobs if j.get("status") == "pending" and j.get("telegram_message_id") is not None]
-    
-    if not pending_unsent and not pending_sent:
-        logger.info("No more pending jobs in database queue.")
-        await send_final_session_report()
-        return
-
-    # 1. Check if there is an active pending job already sent
-    if pending_sent:
-        logger.info("An active pending job card already exists in Telegram. Skipping sending next card.")
-        return
-        
-    # 2. Find the next job in the queue that has not been sent yet
-    next_job = pending_unsent[0]
-        
-    # 3. Format message
-    pain_points_text = ""
-    if next_job.get("pain_points"):
-        pain_points_text = "🎯 Pain Points erkannt:\n" + "\n".join(f"• {pt}" for pt in next_job["pain_points"]) + "\n\n"
-        
-    salary_line = f"💰 {next_job.get('salary_range')}\n" if next_job.get("salary_range") != "null" else ""
-    
-    msg_text = (
-        f"🆕 New Job Found\n\n"
-        f"📌 {next_job['title']}\n"
-        f"{salary_line}"
-        f"🏢 {next_job.get('company_name', 'Unknown Company')}\n"
-        f"🔗 {next_job['link']}\n\n"
-        f"{pain_points_text}"
-        f"✉️ Generierter Pitch:\n"
-        f"─────────────────────\n"
-        f"{next_job.get('pitch', '')}\n"
-        f"─────────────────────\n\n"
-        f"Antwort: gut so / überspringen / kürzer machen / ..."
-    )
-    
-    rounds = next_job.get("modification_rounds", 0)
-    if rounds >= 3:
-        msg_text += "\n\n⚠️ 3 Runden erreicht. Soll ich trotzdem abschicken oder überspringen?"
-        
-    logger.info(f"Sending next job card to Telegram (async): '{next_job['title']}'...")
-    
-    # Track link in session
-    _session_job_links.add(next_job["link"])
-    
-    msg_id = await send_message_async(msg_text, reply_markup=_get_job_card_keyboard())
-    
-    if msg_id:
-        next_job["telegram_message_id"] = msg_id
-        add_or_update_job(next_job)
-        logger.info(f"Next job card sent successfully. Msg ID: {msg_id}")
-    else:
-        logger.error(f"Failed to send next job card for '{next_job['title']}'.")
-
-
 def check_and_send_next_card() -> None:
-    """Finds the next pending unsent job in the database and sends its card to Telegram if no other job is active (sync wrapper)."""
-    if _loop and _loop.is_running():
-        future = asyncio.run_coroutine_threadsafe(check_and_send_next_card_async(), _loop)
-        future.result(timeout=15)
-    else:
-        asyncio.run(check_and_send_next_card_async())
+    """Backward compatibility no-op. Applications are now submitted autonomously."""
+    pass
+
 

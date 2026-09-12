@@ -7,11 +7,14 @@ ENV PYTHONUNBUFFERED=1 \
     POETRY_VERSION=1.8.2 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_CREATE=false \
-    PATH="/opt/poetry/bin:$PATH"
+    PATH="/opt/poetry/bin:$PATH" \
+    TZ="Europe/Berlin"
 
-# Install Poetry and clean apt cache in a single layer
+# Install Poetry, tzdata, tini and clean apt cache in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
+    tini \
     && curl -sSL https://install.python-poetry.org | python3 - \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
@@ -30,6 +33,9 @@ RUN scrapling install || (playwright install chromium && playwright install-deps
 
 # Copy the rest of the application code
 COPY . .
+
+# Use tini as entrypoint to properly reap zombie Chromium processes
+ENTRYPOINT ["tini", "--"]
 
 # Default command to run the scraper
 CMD ["python", "main.py"]

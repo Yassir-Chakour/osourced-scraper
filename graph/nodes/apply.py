@@ -27,9 +27,8 @@ def _fill_and_submit_application(page: Page, job: Job) -> None:
             already_applied = True
 
     if already_applied:
-        logger.info(f"Container/button text indicates already applied. Marking as applied.")
+        logger.info(f"Container/button text indicates already applied for '{job['title']}'. Marking as applied.")
         job["status"] = "applied"
-        send_message_sync(f"✅ Already applied on website for: {job['title']}")
         return
 
     if not apply_btn:
@@ -46,19 +45,20 @@ def _fill_and_submit_application(page: Page, job: Job) -> None:
     page.wait_for_timeout(1000)
 
     if Config.DRY_RUN:
-        logger.info("[DRY_RUN] Skipping final submit click.")
+        logger.info(f"[DRY_RUN] Pitch filled for {job['title']}. Skipping submission.")
         job["status"] = "applied"
-        send_message_sync(f"\U0001f4dd [DRY RUN] Pitch filled for {job['title']}. Skipping submission.")
     else:
-        logger.info("Submitting application...")
+        logger.info(f"Submitting application for {job['title']}...")
         page.click("div.modal-body >> text=Jetzt Bewerben")
         page.wait_for_timeout(5000)
         job["status"] = "applied"
-        send_message_sync(f"\U0001f680 Application Sent for: {job['title']}")
 
 
 def apply_job(job: Job) -> bool:
     """Synchronously apply to a single job using Playwright cookies. Returns True if successful."""
+    import concurrent.futures
+    from db.jobs_db import add_or_update_job
+
     logger.info(f"Applying to job: {job['title']} (DRY_RUN={Config.DRY_RUN})")
     auth_state_path = "data/auth.json"
     success = True
@@ -80,26 +80,38 @@ def apply_job(job: Job) -> bool:
                 job["status"] = "error"
                 job["error_message"] = error_msg
 
-        StealthyFetcher.adaptive = True
-        StealthyFetcher.fetch(job["link"], cookies=cookies, page_action=apply_action, headless=True)
+        def _do_fetch_and_apply():
+            StealthyFetcher.adaptive = True
+            StealthyFetcher.fetch(job["link"], cookies=cookies, page_action=apply_action, headless=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_fetch_and_apply)
+            future.result(timeout=60)
+
+    except concurrent.futures.TimeoutError:
+        success = False
+        error_msg = f"Apply timed out after 60s for {job['link']}"
+        logger.error(error_msg)
+        job["status"] = "error"
+        job["error_message"] = error_msg
     except Exception as e:
         success = False
         error_msg = f"Exception during fetch/apply: {str(e)}"
+        logger.error(error_msg)
         job["status"] = "error"
         job["error_message"] = error_msg
 
+    # Persist the final status to DB
+    add_or_update_job(job)
+
     if not success:
-        alert_text = (
-            f"⚠️ Application Failed\n\n"
-            f"Job: {job['title']}\n"
-            f"Error: {error_msg}"
-        )
-        send_message_sync(alert_text)
+        logger.warning(f"Application failed for '{job['title']}': {error_msg}")
 
     return success
 
 
 def apply_node(state: GraphState) -> GraphState:
+    """Directly applies to the job currently being processed."""
     if state.get("errors"):
         logger.warning("Skipping apply node due to existing errors.")
         return state
@@ -111,11 +123,12 @@ def apply_node(state: GraphState) -> GraphState:
         return state
 
     job = jobs[idx]
-    if job.get("status") != "approved":
-        logger.warning(f"Job status is {job.get('status')}, not approved. Skipping application.")
+    if job.get("status") in ("applied", "rejected", "error"):
+        logger.info(f"Job status is {job.get('status')}. Skipping application.")
         return state
 
     apply_job(job)
     return state
+
 
 

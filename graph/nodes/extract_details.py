@@ -59,8 +59,15 @@ def extract_details_node(state: GraphState) -> GraphState:
             auth_data = json.load(f)
         cookies = auth_data.get("cookies", [])
 
-        StealthyFetcher.adaptive = True
-        response = StealthyFetcher.fetch(job["link"], cookies=cookies, headless=True)
+        import concurrent.futures
+
+        def _do_fetch():
+            StealthyFetcher.adaptive = True
+            return StealthyFetcher.fetch(job["link"], cookies=cookies, headless=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_fetch)
+            response = future.result(timeout=45)
 
         # Check if we already applied (check container/button instead of whole page to avoid chat history false positives)
         cs_text = response.css('div.cs-text', adaptive=True)
@@ -78,10 +85,13 @@ def extract_details_node(state: GraphState) -> GraphState:
             if "beworben" in cs_text_content.lower():
                 already_applied = True
         
+        from db.jobs_db import add_or_update_job
+
         if already_applied or not apply_btn:
             reason = "already applied" if already_applied else "no apply button found (closed/ended)"
-            logger.info(f"Skipping job: {job['title']} - {reason}. Marking as applied.")
+            logger.info(f"Skipping job: {job['title']} - {reason}. Marking as applied in DB.")
             job["status"] = "applied"
+            add_or_update_job(job)
             return state
 
         desc_el = response.css("div.job-description", adaptive=True)
@@ -94,7 +104,6 @@ def extract_details_node(state: GraphState) -> GraphState:
         if "mytalent" in comp_lower:
             logger.info(f"Skipping job: '{job['title']}' - company '{job['company_name']}' is on the ignore list.")
             job["status"] = "rejected"
-            from db.jobs_db import add_or_update_job
             add_or_update_job(job)
             return state
 
@@ -103,6 +112,11 @@ def extract_details_node(state: GraphState) -> GraphState:
             f"Company: {job['company_name']}, Desc length: {len(job['description'])}"
         )
 
+    except concurrent.futures.TimeoutError:
+        err = f"Fetch timed out after 45s for {job['link']}"
+        logger.error(err)
+        job["status"] = "error"
+        job["error_message"] = err
     except Exception as e:
         logger.error(f"Error extracting details for {job['link']}: {e}")
         job["status"] = "error"
