@@ -60,6 +60,7 @@ async def _start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ich aktualisiere meine Prompt-Guardrails sofort für alle zukünftigen Bewerbungen!\n\n"
         "📋 **Befehle:**\n"
         "/guardrails - Zeigt alle aktuell aktiven Prompt-Regeln\n"
+        "/add_rule <Regel> - Fügt eine neue Prompt-Regel hinzu\n"
         "/reset_guardrails - Setzt alle gelernten Regeln zurück\n"
         "/ignored - Zeigt blockierte Firmen\n"
         "/ignore <Firma> - Blockiert eine Firma\n"
@@ -79,7 +80,7 @@ async def _guardrails_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not rules:
         await update.message.reply_text(
             "📋 **Aktive Guardrails:** Keine benutzerdefinierten Regeln hinterlegt.\n\n"
-            "Schreibe mir einfach deine Wünsche im Chat (z. B. *\"Fasse dich kürzer\"*), um Regeln hinzuzufügen.",
+            "Schreibe mir einfach deine Wünsche im Chat (z. B. *\"Fasse dich kürzer\"* oder *\"add to prompt\"*), um Regeln hinzuzufügen.",
             parse_mode="Markdown"
         )
         return
@@ -91,6 +92,32 @@ async def _guardrails_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"_Diese Regeln werden bei jeder Bewerbung automatisch vom System-Prompt beachtet._",
         parse_mode="Markdown"
     )
+
+
+async def _add_rule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /add_rule <rule text> or /prompt <rule text>."""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(Config.TELEGRAM_CHAT_ID):
+        return
+
+    if not context.args:
+        context.user_data["awaiting_prompt_rule"] = True
+        await update.message.reply_text(
+            "📝 Bitte gib die Regel an, die zum Prompt hinzugefügt werden soll:\n\n"
+            "Beispiel: `/add_rule Verwende immer Du statt Sie`\n"
+            "Oder antworte einfach direkt auf diese Nachricht.",
+            parse_mode="Markdown"
+        )
+        return
+
+    rule_text = " ".join(context.args).strip()
+    status_msg = await update.message.reply_text("⏳ Aktualisiere Prompt-Regeln...")
+    try:
+        reply = await asyncio.to_thread(guardrail_manager.process_user_feedback, rule_text)
+        await status_msg.edit_text(reply, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error processing prompt rule: {e}")
+        await status_msg.edit_text(f"❌ Fehler bei der Verarbeitung: {e}")
 
 
 async def _reset_guardrails_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,6 +215,11 @@ TRIGGER_AWAITING_REGEX = re.compile(
     re.IGNORECASE
 )
 
+TRIGGER_AWAITING_PROMPT_REGEX = re.compile(
+    r"^(add\s+to\s+prompt|update\s+prompt|change\s+prompt|add\s+rule|prompt\s+rule|neue\s+regel|regel\s+hinzufügen|prompt\s+anpassen)$",
+    re.IGNORECASE
+)
+
 DIRECT_ADD_PATTERNS = [
     re.compile(r"^add\s+this(?:\s+company)?[:\s]+(.+)$", re.IGNORECASE),
     re.compile(r"^(?:add|füge)\s+(?:this\s+company\s+|the\s+company\s+|die\s+firma\s+|firma\s+)?(.+?)\s+(?:to\s+(?:the\s+)?blacklist|zur\s+blacklist|auf\s+die\s+blacklist)$", re.IGNORECASE),
@@ -225,7 +257,24 @@ async def _message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2. Trigger two-step conversation: "add this", "add company", "add to blacklist", etc.
+    # 2. State machine: Was the bot waiting for a prompt rule / guardrail?
+    if context.user_data.get("awaiting_prompt_rule"):
+        if text_clean.lower() in ("cancel", "abbrechen", "/cancel"):
+            context.user_data["awaiting_prompt_rule"] = False
+            await update.message.reply_text("❌ Vorgang abgebrochen.")
+            return
+
+        context.user_data["awaiting_prompt_rule"] = False
+        status_msg = await update.message.reply_text("⏳ Aktualisiere Prompt-Regeln...")
+        try:
+            reply = await asyncio.to_thread(guardrail_manager.process_user_feedback, text_clean)
+            await status_msg.edit_text(reply, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error processing prompt rule: {e}")
+            await status_msg.edit_text(f"❌ Fehler bei der Verarbeitung: {e}")
+        return
+
+    # 3. Trigger two-step blacklist conversation: "add this", "add company", "add to blacklist", etc.
     if TRIGGER_AWAITING_REGEX.match(text_clean):
         context.user_data["awaiting_company_blacklist"] = True
         await update.message.reply_text(
@@ -235,7 +284,19 @@ async def _message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3. Direct fast-path regex: "add World Bite to blacklist", "block World Bite", "sperre World Bite"
+    # 4. Trigger two-step prompt rule conversation: "add to prompt", "add rule", "prompt anpassen"
+    if TRIGGER_AWAITING_PROMPT_REGEX.match(text_clean):
+        context.user_data["awaiting_prompt_rule"] = True
+        await update.message.reply_text(
+            "📝 **Prompt anpassen:**\n\n"
+            "Was genau soll ich in zukünftigen Bewerbungen beachten oder ändern?\n\n"
+            "_(z. B. 'Verwende immer Du statt Sie' oder 'Erwähne kein n8n mehr')_\n"
+            "_(Tippe `abbrechen`, um abzubrechen)_",
+            parse_mode="Markdown"
+        )
+        return
+
+    # 5. Direct fast-path regex: "add World Bite to blacklist", "block World Bite", "sperre World Bite"
     for pattern in DIRECT_ADD_PATTERNS:
         match = pattern.match(text_clean)
         if match:
@@ -249,7 +310,7 @@ async def _message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-    # 4. Fallback to LLM for complex instructions, mixed feedback, or prompt tuning
+    # 6. Fallback to LLM for complex instructions, mixed feedback, or prompt tuning
     logger.info(f"Received natural language instruction on Telegram: '{text_clean}'")
     status_msg = await update.message.reply_text("⏳ Verarbeite Anweisung...")
 
@@ -290,6 +351,7 @@ def start_bot():
     # Commands
     _application.add_handler(CommandHandler(["start", "help"], _start_command))
     _application.add_handler(CommandHandler("guardrails", _guardrails_command))
+    _application.add_handler(CommandHandler(["add_rule", "prompt"], _add_rule_command))
     _application.add_handler(CommandHandler("reset_guardrails", _reset_guardrails_command))
     _application.add_handler(CommandHandler("ignored", _ignored_command))
     _application.add_handler(CommandHandler("ignore", _ignore_command))
