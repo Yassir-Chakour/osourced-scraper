@@ -127,10 +127,6 @@ if __name__ == "__main__":
             try:
                 app.invoke(initial_state)
                 logger.info("StateGraph execution completed.")
-                
-                # If there is no active job card, send the next one in the queue
-                from telegram_bot.bot import check_and_send_next_card
-                check_and_send_next_card()
             except Exception as e:
                 logger.exception(f"Unhandled error during LangGraph execution: {e}")
 
