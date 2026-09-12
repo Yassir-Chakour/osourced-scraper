@@ -41,65 +41,96 @@ def reset_guardrails() -> str:
     return "🧹 Alle benutzerdefinierten Prompt-Guardrails wurden zurückgesetzt."
 
 
-def update_guardrails_from_feedback(user_feedback: str) -> str:
+def process_user_feedback(user_feedback: str) -> str:
     """
-    Takes natural language feedback from the user, uses LLM to synthesize
-    it into crisp, permanent prompt rules, and updates data/guardrails.json.
+    Takes natural language instructions/feedback from the user.
+    Handles:
+    - Adding companies to blacklist / ignored list
+    - Removing companies from blacklist
+    - Updating prompt guardrail rules
+    - General questions or fallback
     """
     from graph.nodes.pitch_writer import call_llm
+    from db.ignored_companies import get_ignored_companies, add_ignored_company, remove_ignored_company
 
     current_rules = get_guardrails()
     current_rules_text = "\n".join(f"- {r}" for r in current_rules) if current_rules else "(Keine bisherigen Regeln)"
+    ignored_companies = get_ignored_companies()
+    ignored_companies_text = ", ".join(f"'{c}'" for c in ignored_companies) if ignored_companies else "(Keine)"
 
-    prompt = f"""Du bist ein Prompt-Engineering-Assistent für ein automatisches Bewerbungssystem auf Deutsch.
-Der Benutzer hat Feedback zu einer Bewerbung oder allgemeine Anweisungen gegeben.
+    prompt = f"""Du bist der persönliche KI-Assistent für ein automatisiertes Bewerbungssystem auf Deutsch.
+Der Benutzer sendet dir Anweisungen, Feedback oder Befehle im Telegram-Chat.
 
-Bisherige aktive Regeln / Guardrails:
+Aktuelle Prompt-Regeln (Guardrails für Anschreiben):
 {current_rules_text}
 
-Neues Feedback vom Benutzer:
+Aktuell blockierte Firmen (Blacklist - keine Bewerbungen an diese Firmen):
+{ignored_companies_text}
+
+Nachricht des Benutzers:
 "{user_feedback}"
 
 AUFGABE:
-Analysiere das Feedback und formuliere 1 bis 3 prägnante, klare Regeln auf Deutsch, die in zukünftigen Bewerbungen beachtet werden müssen (z. B. "Verwende immer Du statt Sie", "Erwähne kein n8n mehr", "Fasse die E-Mail auf maximal 80 Wörter zusammen").
-Wenn das Feedback einer alten Regel widerspricht, ersetze die alte Regel.
+Analysiere die Absicht des Benutzers und extrahiere im JSON-Format:
+1. "blacklist_add": Liste von Firmennamen, die gesperrt / ignoriert werden sollen (z. B. ["World Bite GmbH"]). Falls keine, [].
+2. "blacklist_remove": Liste von Firmennamen, die entsperrt werden sollen. Falls keine, [].
+3. "new_rules": Liste von neuen oder angepassten Regeln für Anschreiben (z. B. ["Verwende immer Du statt Sie", "Erwähne kein n8n"]). Falls keine, [].
+4. "summary_for_user": Eine kurze, freundliche Erklärung auf Deutsch für den Benutzer, was ausgeführt wurde.
 
 Antworte ausschließlich im JSON-Format:
 {{
-  "action": "added" | "updated" | "clarified",
-  "new_rules": ["Regel 1", "Regel 2"],
-  "summary_for_user": "Kurze, freundliche Erklärung auf Deutsch für den Benutzer in Telegram, was geändert wurde."
+  "blacklist_add": [],
+  "blacklist_remove": [],
+  "new_rules": [],
+  "summary_for_user": "..."
 }}
 """
     try:
         response_text = call_llm(prompt, json_mode=True)
         data = json.loads(response_text)
+        
+        blacklist_add = data.get("blacklist_add", [])
+        blacklist_remove = data.get("blacklist_remove", [])
         new_rules = data.get("new_rules", [])
-        summary = data.get("summary_for_user", "Regeln wurden aktualisiert.")
+        summary = data.get("summary_for_user", "")
 
+        added_companies = []
+        for comp in blacklist_add:
+            comp_clean = comp.strip()
+            if comp_clean:
+                add_ignored_company(comp_clean)
+                added_companies.append(comp_clean)
+
+        removed_companies = []
+        for comp in blacklist_remove:
+            comp_clean = comp.strip()
+            if comp_clean:
+                remove_ignored_company(comp_clean)
+                removed_companies.append(comp_clean)
+
+        merged_rules = list(current_rules)
         if new_rules:
-            # Merge while avoiding exact duplicates
-            merged = list(current_rules)
             for r in new_rules:
                 r_clean = r.strip("- ").strip()
-                if r_clean and r_clean not in merged:
-                    merged.append(r_clean)
-            save_guardrails(merged)
-            
-            rules_bullet_list = "\n".join(f"• {r}" for r in merged)
-            return (
-                f"✅ **Prompt-Guardrails aktualisiert!**\n\n"
-                f"{summary}\n\n"
-                f"📋 **Aktive Regeln ({len(merged)}):**\n"
-                f"{rules_bullet_list}\n\n"
-                f"_Alle zukünftigen Bewerbungen werden diese Regeln automatisch beachten._"
-            )
-        else:
-            return f"ℹ️ {summary}"
+                if r_clean and r_clean not in merged_rules:
+                    merged_rules.append(r_clean)
+            save_guardrails(merged_rules)
+
+        parts = []
+        if summary:
+            parts.append(summary)
+        if added_companies:
+            parts.append("🚫 **Firma(en) blockiert:** " + ", ".join(f"`{c}`" for c in added_companies))
+        if removed_companies:
+            parts.append("✅ **Firma(en) freigegeben:** " + ", ".join(f"`{c}`" for c in removed_companies))
+        if new_rules:
+            rules_bullet_list = "\n".join(f"• {r}" for r in merged_rules)
+            parts.append(f"📋 **Aktive Prompt-Guardrails ({len(merged_rules)}):**\n{rules_bullet_list}")
+
+        return "\n\n".join(parts) if parts else "ℹ️ Anweisung ausgeführt."
 
     except Exception as e:
-        logger.error(f"Failed to update guardrails via LLM: {e}")
-        # Fallback: add raw feedback as a direct rule
+        logger.error(f"Failed to process user message via LLM: {e}")
         clean_fb = user_feedback.strip()
         if clean_fb:
             current_rules.append(clean_fb)
@@ -109,4 +140,9 @@ Antworte ausschließlich im JSON-Format:
                 f"• {clean_fb}\n\n"
                 f"_Gespeichert in Guardrails._"
             )
-        return "❌ Fehler beim Verarbeiten des Feedbacks. Bitte versuche es erneut."
+        return "❌ Fehler beim Verarbeiten der Anweisung."
+
+
+def update_guardrails_from_feedback(user_feedback: str) -> str:
+    """Backwards-compatible wrapper."""
+    return process_user_feedback(user_feedback)
