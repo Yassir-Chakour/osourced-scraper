@@ -11,6 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     TZ="Europe/Berlin"
 
 # Install Poetry, tzdata, tini and clean apt cache in a single layer
+# Prevent tzdata from opening an interactive timezone prompt during image builds.
+ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tzdata \
